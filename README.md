@@ -1,10 +1,10 @@
 # ALVO Backtester
 
 > [!WARNING]
-> **Work in progress — pre-alpha, nothing runs yet.**
-> This repository currently contains a build plan and an empty directory skeleton. There is no
-> working code, no installable artifact, and no API to call. Everything below describes what is
-> being built, not what exists.
+> **Work in progress — pre-alpha.**
+> Phase 0 is in: the server boots, migrates and answers `/api/v1/healthz`. There is no market
+> data, no indicator and no backtest engine yet. Everything below describes what is being built,
+> not what exists.
 
 A web API and charting client for the Brazilian markets. It pulls OHLCV data from
 [brapi.dev](https://brapi.dev), stores it in PostgreSQL, and serves it as candlestick or bar
@@ -50,6 +50,24 @@ being ingested whether or not it stays in an index.
 | Data | [brapi.dev](https://brapi.dev) |
 | Deployment | Docker — one image, `docker compose up` |
 
+## Running it
+
+Docker is the only requirement.
+
+```sh
+cp .env.example .env      # set POSTGRES_PASSWORD and JWT_SECRET
+make up                   # build the image, start postgres + app, run migrations
+curl localhost:8080/api/v1/healthz
+```
+
+`make up-dev` instead bind-mounts the source, publishes the database port and starts the Vite
+dev server on `:5173` with `/api` proxied to the app container; `make restart` picks up Go
+changes. If the host already runs a Postgres on 5432, set `POSTGRES_PORT` in `.env` to something
+else. `make help` lists every target.
+
+The database volume is the asset — rebuilding it costs a month of brapi Pro — so `make down`
+never touches it. Only `make I-KNOW-THIS-DELETES-THE-CANDLE-STORE` does, and it asks first.
+
 ## Status
 
 See **[BUILD_PLAN.md](BUILD_PLAN.md)** for the full design, the phase breakdown, and the
@@ -57,7 +75,7 @@ reasoning behind each decision.
 
 | Phase | |
 |---|---|
-| 0 · Foundations + Docker | not started |
+| 0 · Foundations + Docker | **done** |
 | 1 · brapi client + symbol universe | not started |
 | 2 · Candle ingestion + resampling | not started |
 | 3 · Candle API + chart | not started |

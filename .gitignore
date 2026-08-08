@@ -24,6 +24,12 @@ go.work.sum
 # env file
 .env
 
+# build output
+tmp/
+frontend/node_modules/
+frontend/dist/*
+!frontend/dist/.gitkeep
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -162,17 +162,18 @@ ALVO-Backtester/
 **Goal:** `docker compose up` gives a running server on a migrated database. Nothing installed
 on the host but Docker.
 
-- [ ] `go mod init github.com/mhetem/ALVO-Backtester`
-- [ ] Deps: `jackc/pgx/v5`, `pressly/goose/v3`, `golang-jwt/jwt/v5`, `golang.org/x/crypto` (bcrypt).
-      `sqlc` is a build tool, not a dep
-- [ ] `internal/config`: `DATABASE_URL`, `PORT`, `BRAPI_TOKEN`, `JWT_SECRET`, `PLATFORM`.
+- [x] `go mod init github.com/mhetem/ALVO-Backtester`
+- [x] Deps: `jackc/pgx/v5`, `pressly/goose/v3`. `sqlc` is a build tool, not a dep.
+      `golang-jwt/jwt/v5` and `golang.org/x/crypto` land in Phase 4 — `go mod tidy` drops a
+      require nothing imports, so adding them early is fiction
+- [x] `internal/config`: `DATABASE_URL`, `PORT`, `BRAPI_TOKEN`, `JWT_SECRET`, `PLATFORM`.
       Missing required var = refuse to start, loudly
-- [ ] `sqlc.yaml`: engine `postgresql`, `sql/schema` + `sql/queries`
-- [ ] `GET /api/v1/healthz` → 200 + db ping
-- [ ] Structured logging (`log/slog`), request-id middleware, panic recovery
-- [ ] CI: `go vet ./...`, `go test ./...`, and a `docker build` so a broken image fails the PR
+- [x] `sqlc.yaml`: engine `postgresql`, `sql/schema` + `sql/queries`
+- [x] `GET /api/v1/healthz` → 200 + db ping
+- [x] Structured logging (`log/slog`), request-id middleware, panic recovery
+- [x] CI: `go vet ./...`, `go test ./...`, and a `docker build` so a broken image fails the PR
 
-**Dockerfile — three stages:**
+**Dockerfile — three stages, plus a `dev` stage the compose override targets:**
 
 ```dockerfile
 FROM node:22-alpine AS frontend
@@ -197,32 +198,45 @@ USER nonroot:nonroot
 ENTRYPOINT ["/alvo"]
 ```
 
-- [ ] Dependency layers (`go mod download`, `npm ci`) copied before source so edits don't
+- [x] Dependency layers (`go mod download`, `npm ci`) copied before source so edits don't
       re-download the world. This is the difference between a 10-second rebuild and a 3-minute one
-- [ ] `CGO_ENABLED=0` — pgx is pure Go, so the binary is static and distroless works
-- [ ] `embed.go`: `//go:embed all:frontend/dist` and `//go:embed sql/schema/*.sql`. The final
+- [x] `CGO_ENABLED=0` — pgx is pure Go, so the binary is static and distroless works
+- [x] `embed.go`: `//go:embed all:frontend/dist` and `//go:embed sql/schema/*.sql`. The final
       image copies **only the binary** — no `data/`, no migration files, nothing to go missing
       between build and deploy
-- [ ] Goose runs migrations from the embedded `fs.FS` on startup, before the listener opens
-- [ ] `.dockerignore`: `.git`, `frontend/node_modules`, `frontend/dist`, `*.md`, `.env`.
+- [x] Goose runs migrations from the embedded `fs.FS` on startup, before the listener opens
+- [x] `.dockerignore`: `.git`, `frontend/node_modules`, `frontend/dist`, `*.md`, `.env`.
       Without `node_modules` in there the build context is hundreds of megabytes
 
 **docker-compose.yml:**
 
-- [ ] `db`: `postgres:17-alpine`, named volume, `POSTGRES_*` from `.env`, and a **healthcheck**
+- [x] `db`: `postgres:17-alpine`, named volume, `POSTGRES_*` from `.env`, and a **healthcheck**
       (`pg_isready`). `app` uses `depends_on: { db: { condition: service_healthy } }` — without
       it the app races the database on every cold start and migrations fail intermittently
-- [ ] `app`: built from the Dockerfile, `DATABASE_URL` pointing at `db:5432`, port published
-- [ ] The db port is **not** published in the base compose. `docker-compose.dev.yml` overrides it
+- [x] `app`: built from the Dockerfile, `DATABASE_URL` pointing at `db:5432`, port published
+- [x] The db port is **not** published in the base compose. `docker-compose.dev.yml` overrides it
       to expose 5432 for psql/TablePlus
-- [ ] `docker-compose.dev.yml`: bind-mounts the source and runs a hot-reload target so the inner
-      loop isn't a rebuild. Vite dev server proxies `/api` to the app container
-- [ ] `Makefile` wrapping the incantations: `up`, `up-dev`, `down`, `logs`, `psql`, `migrate`,
+- [x] `docker-compose.dev.yml`: bind-mounts the source and targets the `dev` stage (`go run .`,
+      `make restart` to pick up changes — no watcher dependency in Phase 0). Vite dev server
+      proxies `/api` to the app container
+- [x] `Makefile` wrapping the incantations: `up`, `up-dev`, `down`, `logs`, `psql`, `migrate`,
       `sqlc`, `test`
-- [ ] `.env.example` committed; `.env` gitignored (already is)
+- [x] `.env.example` committed; `.env` gitignored (already is)
 
 **Done when:** a fresh clone with only Docker installed runs `make up` and gets a healthy
 `/healthz` against a migrated database.
+
+> **Status: done and verified end to end.** `make up` on a clean volume brings up Postgres, waits
+> on its healthcheck, runs `00001_init.sql` via goose and answers `/api/v1/healthz` with
+> `{"status":"ok","db":"up"}`. Restarting reports "no migrations to run" — the migration path is
+> idempotent. The runtime image is **4.8 MB**, runs as `nonroot`, and has no shell (`exec sh`
+> fails, as it should). `TZ` and the database timezone both resolve to UTC. The db port is
+> unpublished in the base compose and reachable only under the dev override. `docker-compose.prod.yml`
+> resolves with `app.ports = []` behind Caddy on 80/443, and the Caddyfile passes `caddy validate`.
+>
+> Two things are deliberately not done yet: `make sqlc` fails with "no queries contained in
+> /src/sql/queries" until Phase 1 writes some — it parses the schema fine — and multi-arch
+> (`linux/arm64`) image builds belong to Phase 13.
 
 ---
 

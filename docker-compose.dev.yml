@@ -1,0 +1,33 @@
+services:
+  db:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  app:
+    build:
+      target: dev
+    environment:
+      PLATFORM: dev
+    volumes:
+      - .:/src
+      - gomod:/go/pkg/mod
+      - gobuild:/root/.cache/go-build
+
+  web:
+    image: node:22-alpine
+    working_dir: /app/frontend
+    command: sh -c "npm install && npm run dev"
+    environment:
+      VITE_API_PROXY_TARGET: http://app:8080
+    volumes:
+      - ./frontend:/app/frontend
+      - nodemodules:/app/frontend/node_modules
+    ports:
+      - "${VITE_PORT:-5173}:5173"
+    depends_on:
+      - app
+
+volumes:
+  gomod:
+  gobuild:
+  nodemodules:

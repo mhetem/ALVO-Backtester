@@ -1,0 +1,35 @@
+services:
+  db:
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+
+  app:
+    ports: !override []
+    expose:
+      - "8080"
+    deploy:
+      resources:
+        limits:
+          memory: 1024m
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      ALVO_DOMAIN: ${ALVO_DOMAIN:?set ALVO_DOMAIN in .env}
+      ALVO_TLS_EMAIL: ${ALVO_TLS_EMAIL:?set ALVO_TLS_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  caddydata:
+  caddyconfig:

@@ -1,0 +1,8 @@
+{
+	email {$ALVO_TLS_EMAIL}
+}
+
+{$ALVO_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:8080
+}
