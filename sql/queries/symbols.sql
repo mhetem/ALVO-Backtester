@@ -29,6 +29,21 @@ SELECT * FROM symbols WHERE ticker = $1;
 -- name: ListSymbols :many
 SELECT * FROM symbols ORDER BY ticker;
 
+-- name: SearchSymbols :many
+SELECT *
+FROM symbols
+WHERE ($1::text = ''
+       OR strpos(ticker, upper($1::text)) > 0
+       OR strpos(upper(long_name), upper($1::text)) > 0)
+  AND ($2::text = '' OR kind = $2::text)
+ORDER BY
+    (strpos(ticker, upper($1::text)) = 1) DESC,
+    (strpos(ticker, upper($1::text)) > 0) DESC,
+    tracked DESC,
+    active DESC,
+    ticker
+LIMIT $3;
+
 -- name: ListTrackedSymbols :many
 SELECT * FROM symbols WHERE tracked ORDER BY ticker;
 

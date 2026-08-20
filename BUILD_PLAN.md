@@ -631,22 +631,182 @@ keeps picking up new sessions. `--force` overrides both.
 
 **Goal:** a real candlestick chart in a browser, end to end.
 
-- [ ] `GET /api/v1/symbols?q=&kind=&limit=` — search/autocomplete
-- [ ] `GET /api/v1/candles?symbol=PETR4&timeframe=15m&from=&to=&limit=` — hard cap on `limit`,
+- [x] `GET /api/v1/symbols?q=&kind=&limit=` — search/autocomplete
+- [x] `GET /api/v1/candles?symbol=PETR4&timeframe=15m&from=&to=&limit=` — hard cap on `limit`,
       cursor pagination by `ts`. `timeframe` accepts exactly `5m|15m|30m|1h|1d`; anything else is
       a 400 listing the valid set
-- [ ] Response is columnar (`{ts:[], o:[], h:[], l:[], c:[], v:[]}`) not an array of objects —
+- [x] Response is columnar (`{ts:[], o:[], h:[], l:[], c:[], v:[]}`) not an array of objects —
       roughly 4× smaller over the wire and drops straight into the chart lib
-- [ ] `ETag`/`Cache-Control` on closed historical ranges. A closed bar is immutable; say so
-- [ ] `frontend/`: Svelte 5 + Vite + TS, Lightweight Charts v5 (`addSeries(CandlestickSeries, …)`)
-- [ ] Symbol search, timeframe switcher (5m/15m/30m/1h/1d), candle ⇄ bar toggle
-- [ ] Lazy-load older candles on pan-left via `setVisibleRange` subscription
-- [ ] Crosshair readout: OHLCV + date
-- [ ] Timeframes with no data render a clear empty state, not a broken chart
-- [ ] Go serves the embedded `frontend/dist` as a SPA fallback — unknown non-`/api` paths return
-      `index.html`. One container serves both; no nginx, no CORS
+- [x] `ETag`/`Cache-Control` on closed historical ranges. A closed bar is immutable; say so
+      *(with a one-day ceiling rather than a year — see the decisions below)*
+- [x] `frontend/`: Svelte 5 + Vite + TS, Lightweight Charts v5 (`addSeries(CandlestickSeries, …)`)
+- [x] Symbol search, timeframe switcher (5m/15m/30m/1h/1d), candle ⇄ bar toggle
+- [x] Lazy-load older candles on pan-left via `setVisibleRange` subscription
+      *(`subscribeVisibleLogicalRangeChange` — the logical range is the one that answers "how many
+      bars are left to the left of the viewport", which is the actual trigger condition)*
+- [x] Crosshair readout: OHLCV + date
+- [x] Timeframes with no data render a clear empty state, not a broken chart
+- [x] Go serves the embedded `frontend/dist` as a SPA fallback — unknown non-`/api` paths return
+      `index.html`. One container serves both; no nginx, no CORS *(landed in Phase 0)*
 
 **Done when:** you open the app, type PETR4, and pan back through a year of daily candles smoothly.
+
+### Decisions this phase forced
+
+**Paging runs backwards, and it pages on fold boundaries rather than on base rows.** This is the
+carry-over Phase 2 flagged: `CandleService.Load` caps the *base* fetch, so a 5m read that hits the
+cap can end mid-bucket and hand back a 1h candle folded from four bars instead of twelve. A chart
+that pans left is asking for *older* data, so `CandleService.Page` reads `ORDER BY ts DESC` from the
+window's top edge and takes `limit × BaseBars() + 1` base rows. Ragged sessions only help here —
+missing bars mean fewer base rows per bucket, so N rows always fold into *at least* as many buckets
+as a full session would. The `+ 1` is a probe: if the fetch came back full, the fetch was truncated,
+the oldest bucket may be partial, and it is dropped. Then the newest `limit` buckets are kept. The
+failure mode is one wasted round trip when the window happens to hold exactly the cap — the page is
+one bucket short and the client fetches it next. Over-reporting "there is more", never under.
+
+**The cursor is an exclusive upper bound on the *base* timestamp, which is why it composes with
+folding at all.** A fold bucket's `ts` is by construction the timestamp of the first base bar inside
+it, so `ts < cursor` excludes exactly the buckets already delivered and nothing else. Pages neither
+overlap nor gap, no matter which timeframe they were folded to, and the client never has to know
+that 15m is derived. When a page ends up empty but truncated, the cursor falls back to the oldest
+base row read, so paging always advances instead of spinning on the same window.
+
+**`immutable` is capped at a day, not a year.** The plan says a closed bar is immutable and to say
+so, and the response does — but this project ships with known holes that a later backfill is
+supposed to close (2026-06-05, and anything the holiday file gets wrong). `max-age=31536000,
+immutable` would mean a browser that cached a gap keeps showing the gap for a year with no way to
+ask again. `public, max-age=86400, immutable` bounds that to a day while still costing zero
+revalidations during a session. Windows that reach into the current session get `no-cache` and lean
+on the `ETag` instead. "Closed" is decided on the effective window end — `min(to + 1 day, cursor)` —
+not on the newest bar returned, so an empty range is cacheable on the same terms as a full one.
+
+**The chart is fed exchange-local timestamps; the API is not.** Lightweight Charts renders a
+`UTCTimestamp` in UTC and has no timezone setting, so B3's 13:00Z session open would draw on the
+axis as 13:00. `toChartTime` shifts each bar by its America/São_Paulo offset, computed through
+`Intl` and cached per UTC day rather than hardcoded to −03:00, so the 2016–2018 daily bars that
+predate Brazil abolishing DST don't drift. The API keeps speaking UTC seconds; the shift is a
+rendering concern and lives entirely in the frontend. The crosshair readout formats the *unshifted*
+timestamp through `Intl` in the exchange timezone, so it and the axis agree without sharing a path.
+
+**Search ranks with `strpos`, not `ILIKE '%q%'`.** Same matching, but the query is a literal rather
+than a pattern, so a user typing `%` into the box gets no matches instead of the whole universe, and
+there is no escaping to get wrong. Empty `q` degenerates to a browse listing rather than an error,
+ordered `tracked` first, then `active`, then alphabetically — which is what an empty autocomplete
+box should show. Exact-prefix matches sort above substring matches, so typing `PET` puts PETR4 above
+anything merely containing "pet" in its long name.
+
+**`long_name` is the display name, per Phase 1's warning.** brapi's `shortName` echoes the ticker on
+the free tier, so `displayName` prefers `long_name`, falls back to `short_name` only when it differs
+from the ticker, and otherwise shows the ticker alone. A symbol seeded from `contracts.json` with no
+brapi enrichment renders as its ticker rather than as an empty string.
+
+**The palette lives in CSS and the chart reads it from there.** Lightweight Charts needs concrete
+colour strings, not custom properties, so the obvious shape is a TypeScript palette object — which
+means every brand colour written twice, once for the DOM and once for the canvas, drifting the first
+time one is edited. Instead `app.css` owns the tokens and `theme.ts` pulls the `--chart-*` ones back
+out with `getComputedStyle`. Uncached, deliberately: the values are re-read on every
+`prefers-color-scheme` change, so the light/dark swap needs no parallel palette in TS at all. The
+brand hexes are eyeballed from *Template apresentação ALVO.pdf*; if there are canonical values they
+land in one block at the top of `app.css`.
+
+**Down candles are the brand orange.** The deck's whole vocabulary is ink, cream and one orange, and
+that orange already reads as a sell tone — using it for down bars makes the chart unmistakably ALVO
+instead of generic-terminal, and leaves cream and ink to carry the chrome. Up stays green, because
+inverting a convention every Brazilian trader has internalised would cost more than it buys. The
+same orange doubles as the UI accent on active controls; different enough in context.
+
+**Dark is the primary theme, light is the cream one.** Slides 1, 3 and 10 are ink with cream type,
+which is what a chart wants anyway. `prefers-color-scheme: light` gets the cream world of slides 4
+and 6 rather than plain white — lightened slightly from the deck's `#efe7d9` for a full-viewport
+background, with the deck value kept for panels.
+
+**Montserrat, self-hosted, and it is a match rather than the real thing.** The deck's geometric sans
+with its double-storey `a` and single-storey `g` is closest to Montserrat among faces that can
+actually be vendored; if the brand font is something licensed like Gilroy or Cera, swapping it is
+the `--font-ui` line. It ships as `@fontsource-variable/montserrat` rather than a Google Fonts
+`<link>` because a stylesheet fetched from `fonts.googleapis.com` would be exactly the runtime
+dependency Phase 0 built the whole embedded-frontend story to avoid — and the box is in Brazil while
+that CDN may not be. Vite bundles all five `unicode-range` subsets into `dist` (~171 KB on the image,
+against a 4.8 MB baseline); a `pt-BR` browser downloads only the 38 KB latin one, since every
+accented character Portuguese uses lives under U+00FF.
+
+**The time axis is two rows, and only the top one belongs to the chart library.** Lightweight Charts
+draws a single row of tick marks and mixes granularities into it — a daily chart ends up alternating
+bare day numbers with month names, so "20" gives no clue which month it sits in. The library has no
+two-row axis and its labels are canvas-drawn, so a newline in `tickMarkFormatter` buys nothing. The
+split: `tickMarkFormatter` makes the top row uniform — day-of-month on `1d`, `HH:mm` intraday, with
+the day number substituted at day boundaries because that is where an intraday reader needs it — and
+a plain DOM strip underneath carries the period, `Aug 2026` on daily and `20 Aug 2026` intraday,
+positioned with `timeToCoordinate` at each period's first visible bar. It stays aligned because the
+left price scale is hidden, so the pane's x origin and the strip's are the same. Labels closer than
+64 px are dropped, which is what keeps an intraday chart spanning forty sessions from stacking forty
+date labels on top of each other. The first visible bar always emits a label whether or not it
+starts a period, so the current month is never off-screen. A `ResizeObserver` re-runs the placement
+because a width change moves every coordinate without changing the logical range, so neither of the
+library's range subscriptions fires for it.
+
+**The interface is English end to end, including its dates and numbers.** Everything else in the
+project — plan, code, UI strings — is already English, so `pt-BR` date and number formatting was the
+only Portuguese left and it made the axis read half-translated. Dates are now built from one English
+month table rather than from `Intl`, which also removes the split where the axis formatted wall-clock
+fields by hand while the crosshair readout went through a locale: both now render `20 Aug 2026` from
+the same array, and the day-month-year order sidesteps the `mm/dd` ambiguity `en-US` would introduce.
+**Numbers are the deliberate exception, and they follow B3.** Prices read `31,25` and volume
+`1.234,5 mi`, because a decimal comma is what a quote costs on this exchange, not a translation of
+it — the same reason `America/Sao_Paulo` stays put regardless of what language the interface speaks.
+That split has one consequence worth naming: Lightweight Charts formats its own price scale and
+crosshair labels with a `.` decimal and ignores `localization.locale` for prices entirely, so the
+axis would have disagreed with the readout sitting directly above it. Both series therefore carry a
+`priceFormat: { type: 'custom' }` pointing at the same `formatPrice`, which puts every number on the
+screen — readout, price scale, crosshair — through one function. `minMove` is `0.01`, which is the
+stock `tick_size` Phase 1 already stores; when Phase 7 charts something with a different tick, that
+value should come from the symbol row rather than the constant.
+
+**The target mark is CSS, not the logo.** The header's ring-and-dot is two `border-radius: 50%`
+boxes standing in for the real `⊙` wordmark, so the layout is already the right shape when the
+actual asset arrives. Same for the arc behind the empty state — a bordered circle pushed mostly
+off-canvas, which is the deck's recurring motif.
+
+**`timeframe` defaults to `1d`, and `from` defaults to 1990.** Daily is the only timeframe with real
+depth on Free, so it is the one that makes the app look like it works on first load. The wide `from`
+default is free: the query is a backwards index scan on `(symbol_id, timeframe, ts)` with a `LIMIT`,
+so the window's lower bound never costs anything and paging is genuinely unbounded.
+
+> **Status: written, not yet run.** The Go code does not compile until `sqlc` regenerates
+> `internal/db` — `SearchSymbols` and `ListCandlesDesc` are new queries — and the frontend does not
+> build until `package-lock.json` picks up `lightweight-charts`. In order:
+>
+> ```
+> make sqlc
+> cd frontend && npm install && cd ..
+> make check
+> make up
+> ```
+>
+> Tests added are offline and hit no database: the paging/trim arithmetic and the cursor's
+> non-overlap property in `internal/market/page_test.go`, and every 400 path, the columnar encoding
+> and the `ETag`/304 handshake in `internal/api`. The parts that need a live store — that a 15m page
+> boundary reconciles against the 5m bars under it, and that panning left across a page boundary
+> leaves no seam — are only checkable against the real database.
+>
+> Carried into later phases, deliberately:
+> - **`adj_close` is not in the candle response.** The chart draws raw prices, so a split inside the
+>   window will draw as a gap. Which series a *chart* should show is a different question from which
+>   series a *backtest* should run on; Phase 9 has to answer the second one, and the first should
+>   follow it rather than lead it.
+> - **Resampled series are still not cached.** `Page` folds on every call, as `Load` does. The `ETag`
+>   moves the cost off repeat requests, which was the cheap half; a server-side cache still waits for
+>   profiling.
+> - **`/api/v1/symbols` and `/api/v1/candles` are public**, which is the plan's own call — market
+>   data is not user data. Phase 4 puts only strategies, runs and watchlists behind `RequireAuth`,
+>   plus `/admin/brapi-usage`, which is still open from Phase 1.
+> - **The frontend has no router.** One chart, one symbol, no deep links — the SPA fallback is
+>   already in place for when Phase 7 or 8 needs real routes.
+> - **The logo assets are not in yet.** The header mark and the empty-state arc are CSS circles
+>   standing in for the real `ALVO ⊙` wordmark; dropping the SVG in replaces the `.brand` block and
+>   nothing else. A favicon is also still missing — `index.html` sets `theme-color` but no icon.
+> - **Nothing debounces the timeframe switcher.** Clicking through 5m→15m→30m fires three requests
+>   and aborts the first two; correct, but it spends round trips a debounce would save.
 
 ---
 

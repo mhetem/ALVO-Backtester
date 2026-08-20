@@ -227,3 +227,63 @@ func (q *Queries) ListCandles(ctx context.Context, arg ListCandlesParams) ([]Lis
 	}
 	return items, nil
 }
+
+const listCandlesDesc = `-- name: ListCandlesDesc :many
+SELECT ts, open, high, low, close, adj_close, volume
+FROM candles
+WHERE symbol_id = $1 AND timeframe = $2 AND ts >= $3 AND ts < $4
+ORDER BY ts DESC
+LIMIT $5
+`
+
+type ListCandlesDescParams struct {
+	SymbolID  int64     `json:"symbol_id"`
+	Timeframe string    `json:"timeframe"`
+	Ts        time.Time `json:"ts"`
+	Ts_2      time.Time `json:"ts_2"`
+	Limit     int32     `json:"limit"`
+}
+
+type ListCandlesDescRow struct {
+	Ts       time.Time `json:"ts"`
+	Open     float64   `json:"open"`
+	High     float64   `json:"high"`
+	Low      float64   `json:"low"`
+	Close    float64   `json:"close"`
+	AdjClose *float64  `json:"adj_close"`
+	Volume   int64     `json:"volume"`
+}
+
+func (q *Queries) ListCandlesDesc(ctx context.Context, arg ListCandlesDescParams) ([]ListCandlesDescRow, error) {
+	rows, err := q.db.Query(ctx, listCandlesDesc,
+		arg.SymbolID,
+		arg.Timeframe,
+		arg.Ts,
+		arg.Ts_2,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCandlesDescRow{}
+	for rows.Next() {
+		var i ListCandlesDescRow
+		if err := rows.Scan(
+			&i.Ts,
+			&i.Open,
+			&i.High,
+			&i.Low,
+			&i.Close,
+			&i.AdjClose,
+			&i.Volume,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

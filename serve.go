@@ -10,11 +10,17 @@ import (
 
 	"github.com/mhetem/ALVO-Backtester/internal/api"
 	"github.com/mhetem/ALVO-Backtester/internal/config"
+	"github.com/mhetem/ALVO-Backtester/internal/market"
 )
 
 func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	startCtx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
+
+	calendar, err := market.LoadCalendar(dataFS, market.HolidaysFile)
+	if err != nil {
+		return err
+	}
 
 	pool, err := openPool(startCtx, cfg, log)
 	if err != nil {
@@ -29,7 +35,7 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           api.NewServer(cfg, pool, log, static).Handler(),
+		Handler:           api.NewServer(cfg, pool, log, static, calendar).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -144,6 +144,64 @@ func (q *Queries) ListTrackedSymbols(ctx context.Context) ([]Symbol, error) {
 	return items, nil
 }
 
+const searchSymbols = `-- name: SearchSymbols :many
+SELECT id, ticker, short_name, long_name, kind, currency, lot_size, tick_size, point_value, active, tracked, first_seen, last_seen, created_at, updated_at
+FROM symbols
+WHERE ($1::text = ''
+       OR strpos(ticker, upper($1::text)) > 0
+       OR strpos(upper(long_name), upper($1::text)) > 0)
+  AND ($2::text = '' OR kind = $2::text)
+ORDER BY
+    (strpos(ticker, upper($1::text)) = 1) DESC,
+    (strpos(ticker, upper($1::text)) > 0) DESC,
+    tracked DESC,
+    active DESC,
+    ticker
+LIMIT $3
+`
+
+type SearchSymbolsParams struct {
+	Column1 string `json:"column_1"`
+	Column2 string `json:"column_2"`
+	Limit   int32  `json:"limit"`
+}
+
+func (q *Queries) SearchSymbols(ctx context.Context, arg SearchSymbolsParams) ([]Symbol, error) {
+	rows, err := q.db.Query(ctx, searchSymbols, arg.Column1, arg.Column2, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Symbol{}
+	for rows.Next() {
+		var i Symbol
+		if err := rows.Scan(
+			&i.ID,
+			&i.Ticker,
+			&i.ShortName,
+			&i.LongName,
+			&i.Kind,
+			&i.Currency,
+			&i.LotSize,
+			&i.TickSize,
+			&i.PointValue,
+			&i.Active,
+			&i.Tracked,
+			&i.FirstSeen,
+			&i.LastSeen,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertSymbol = `-- name: UpsertSymbol :one
 INSERT INTO symbols (
     ticker, short_name, long_name, kind, currency,

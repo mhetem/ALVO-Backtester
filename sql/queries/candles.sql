@@ -19,6 +19,13 @@ WHERE symbol_id = $1 AND timeframe = $2 AND ts >= $3 AND ts < $4
 ORDER BY ts
 LIMIT $5;
 
+-- name: ListCandlesDesc :many
+SELECT ts, open, high, low, close, adj_close, volume
+FROM candles
+WHERE symbol_id = $1 AND timeframe = $2 AND ts >= $3 AND ts < $4
+ORDER BY ts DESC
+LIMIT $5;
+
 -- name: ListCandleTimestamps :many
 SELECT ts
 FROM candles
