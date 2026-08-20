@@ -2,22 +2,19 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/mhetem/ALVO-Backtester/internal/api"
 	"github.com/mhetem/ALVO-Backtester/internal/config"
 )
 
@@ -28,14 +25,21 @@ const (
 	shutdownTimeout = 15 * time.Second
 )
 
+var commands = []string{"serve", "sync-symbols"}
+
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args[1:]); err != nil {
 		slog.Error("fatal", slog.Any("err", err))
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(args []string) error {
+	command := "serve"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		command, args = args[0], args[1:]
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -47,56 +51,31 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	startCtx, cancel := context.WithTimeout(ctx, startupTimeout)
-	defer cancel()
+	switch command {
+	case "serve":
+		return runServe(ctx, cfg, log)
+	case "sync-symbols":
+		return runSyncSymbols(ctx, cfg, log, args)
+	default:
+		return fmt.Errorf("unknown command %q (want one of: %s)", command, strings.Join(commands, ", "))
+	}
+}
 
-	if err := migrateUp(startCtx, cfg.DatabaseURL, log); err != nil {
-		return err
+func openPool(ctx context.Context, cfg config.Config, log *slog.Logger) (*pgxpool.Pool, error) {
+	if err := migrateUp(ctx, cfg.DatabaseURL, log); err != nil {
+		return nil, err
 	}
 
-	pool, err := pgxpool.New(startCtx, cfg.DatabaseURL)
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer pool.Close()
-
-	if err := pool.Ping(startCtx); err != nil {
-		return err
-	}
-
-	static, err := fs.Sub(frontendFS, frontendDir)
-	if err != nil {
-		return err
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
 	}
 
-	srv := &http.Server{
-		Addr:              cfg.Addr(),
-		Handler:           api.NewServer(cfg, pool, log, static).Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		log.Info("listening", slog.String("addr", srv.Addr), slog.String("platform", cfg.Platform))
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-	}
-
-	log.Info("shutting down")
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer stopCancel()
-
-	return srv.Shutdown(stopCtx)
+	return pool, nil
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

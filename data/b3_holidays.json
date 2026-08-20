@@ -1,0 +1,649 @@
+{
+  "timezone": "America/Sao_Paulo",
+  "session": {
+    "open": "10:00",
+    "close": "17:00"
+  },
+  "holidays": [
+    {
+      "date": "2020-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2020-02-24",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2020-02-25",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2020-02-26",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2020-04-10",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2020-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2020-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2020-06-11",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2020-07-09",
+      "name": "Revolucao Constitucionalista"
+    },
+    {
+      "date": "2020-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2020-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2020-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2020-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2020-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2020-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2020-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2021-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2021-01-25",
+      "name": "Aniversario de Sao Paulo"
+    },
+    {
+      "date": "2021-02-15",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2021-02-16",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2021-02-17",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2021-04-02",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2021-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2021-06-03",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2021-07-09",
+      "name": "Revolucao Constitucionalista"
+    },
+    {
+      "date": "2021-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2021-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2021-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2021-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2021-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2021-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2022-02-28",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2022-03-01",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2022-03-02",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2022-04-15",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2022-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2022-06-16",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2022-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2022-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2022-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2022-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2023-02-20",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2023-02-21",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2023-02-22",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2023-04-07",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2023-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2023-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2023-06-08",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2023-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2023-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2023-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2023-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2023-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2024-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2024-02-12",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2024-02-13",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2024-02-14",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2024-03-29",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2024-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2024-05-30",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2024-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2024-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2024-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2024-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2024-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2025-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2025-03-03",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2025-03-04",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2025-03-05",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2025-04-18",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2025-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2025-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2025-06-19",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2025-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2025-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2025-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2025-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2026-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2026-02-16",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2026-02-17",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2026-02-18",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2026-04-03",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2026-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2026-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2026-06-04",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2026-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2026-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2026-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2026-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2026-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2026-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2026-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2027-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2027-02-08",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2027-02-09",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2027-02-10",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2027-03-26",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2027-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2027-05-27",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2027-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2027-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2027-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2027-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2027-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2027-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2028-02-28",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2028-02-29",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2028-03-01",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2028-04-14",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2028-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2028-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2028-06-15",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2028-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2028-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2028-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2028-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2028-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2028-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2029-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2029-02-12",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2029-02-13",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2029-02-14",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2029-03-30",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2029-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2029-05-31",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2029-09-07",
+      "name": "Independencia do Brasil"
+    },
+    {
+      "date": "2029-10-12",
+      "name": "Nossa Senhora Aparecida"
+    },
+    {
+      "date": "2029-11-02",
+      "name": "Finados"
+    },
+    {
+      "date": "2029-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2029-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2029-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2029-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2029-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2030-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2030-03-04",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2030-03-05",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2030-03-06",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2030-04-19",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2030-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2030-06-20",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2030-11-15",
+      "name": "Proclamacao da Republica"
+    },
+    {
+      "date": "2030-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2030-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2030-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2030-12-31",
+      "name": "Vespera de Ano Novo"
+    },
+    {
+      "date": "2031-01-01",
+      "name": "Confraternizacao Universal"
+    },
+    {
+      "date": "2031-02-24",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2031-02-25",
+      "name": "Carnaval"
+    },
+    {
+      "date": "2031-02-26",
+      "name": "Quarta-feira de Cinzas",
+      "open": "13:00"
+    },
+    {
+      "date": "2031-04-11",
+      "name": "Sexta-feira Santa"
+    },
+    {
+      "date": "2031-04-21",
+      "name": "Tiradentes"
+    },
+    {
+      "date": "2031-05-01",
+      "name": "Dia do Trabalho"
+    },
+    {
+      "date": "2031-06-12",
+      "name": "Corpus Christi"
+    },
+    {
+      "date": "2031-11-20",
+      "name": "Consciencia Negra"
+    },
+    {
+      "date": "2031-12-24",
+      "name": "Vespera de Natal"
+    },
+    {
+      "date": "2031-12-25",
+      "name": "Natal"
+    },
+    {
+      "date": "2031-12-31",
+      "name": "Vespera de Ano Novo"
+    }
+  ]
+}

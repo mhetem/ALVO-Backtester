@@ -1,0 +1,11 @@
+{
+  "index": "dev",
+  "as_of": "2026-08-01",
+  "source": "brapi free tier: the four tokenless development tickers",
+  "tickers": [
+    "ITUB4",
+    "MGLU3",
+    "PETR4",
+    "VALE3"
+  ]
+}

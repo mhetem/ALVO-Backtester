@@ -1,0 +1,51 @@
+{
+  "futures": [
+    {
+      "root": "WIN",
+      "name": "Mini Ibovespa Futuro",
+      "long_name": "Contrato Futuro Mini de Indice Bovespa",
+      "point_value": 0.2,
+      "tick_size": 5,
+      "lot_size": 1,
+      "months": "GJMQVZ"
+    },
+    {
+      "root": "IND",
+      "name": "Ibovespa Futuro",
+      "long_name": "Contrato Futuro de Indice Bovespa",
+      "point_value": 1,
+      "tick_size": 5,
+      "lot_size": 1,
+      "months": "GJMQVZ"
+    },
+    {
+      "root": "WDO",
+      "name": "Mini Dolar Futuro",
+      "long_name": "Contrato Futuro Mini de Dolar Comercial",
+      "point_value": 10,
+      "tick_size": 0.5,
+      "lot_size": 1,
+      "months": "FGHJKMNQUVXZ"
+    },
+    {
+      "root": "DOL",
+      "name": "Dolar Futuro",
+      "long_name": "Contrato Futuro de Dolar Comercial",
+      "point_value": 50,
+      "tick_size": 0.5,
+      "lot_size": 1,
+      "months": "FGHJKMNQUVXZ"
+    }
+  ],
+  "symbols": [
+    {
+      "ticker": "^BVSP",
+      "kind": "index",
+      "short_name": "IBOVESPA",
+      "long_name": "Indice Bovespa",
+      "lot_size": 1,
+      "tick_size": 1,
+      "tracked": true
+    }
+  ]
+}

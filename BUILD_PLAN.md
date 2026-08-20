@@ -171,7 +171,10 @@ on the host but Docker.
 - [x] `sqlc.yaml`: engine `postgresql`, `sql/schema` + `sql/queries`
 - [x] `GET /api/v1/healthz` → 200 + db ping
 - [x] Structured logging (`log/slog`), request-id middleware, panic recovery
-- [x] CI: `go vet ./...`, `go test ./...`, and a `docker build` so a broken image fails the PR
+- [x] CI: `gofmt`, `go vet ./...`, `staticcheck ./...`, `gosec ./...`, `go test -race ./...`, and a
+      `docker build` so a broken image fails the PR. Linters are installed with `go install
+      <module>@latest` rather than marketplace actions — one less mutable third party holding a
+      workflow token, and the tool is always built with the toolchain `setup-go` resolved
 
 **Dockerfile — three stages, plus a `dev` stage the compose override targets:**
 
@@ -264,35 +267,35 @@ CREATE TABLE symbols (
 );
 ```
 
-- [ ] `internal/brapi`: one client struct, token from config, `context.Context` everywhere
-- [ ] Token-bucket rate limiter + exponential backoff on 429/5xx. A 429 must never become a
+- [x] `internal/brapi`: one client struct, token from config, `context.Context` everywhere
+- [x] Token-bucket rate limiter + exponential backoff on 429/5xx. A 429 must never become a
       partial write
-- [ ] Quota accounting table (`brapi_usage(day DATE PRIMARY KEY, requests INT)`), incremented per
+- [x] Quota accounting table (`brapi_usage(day DATE PRIMARY KEY, requests INT)`), incremented per
       call, exposed on an admin endpoint. Knowing you are at 14,800/15,000 *before* the backfill
       dies matters
-- [ ] `kind`: `stock | fii | bdr | unit | index | future | crypto`
-- [ ] `lot_size` 100 for stocks (fracionário is a different ticker, suffix `F`), 1 for FIIs
-- [ ] `point_value` for futures: WIN = 0.20 BRL/point, WDO = 10.00 BRL/point. Seeded from
+- [x] `kind`: `stock | fii | bdr | unit | index | future | crypto`
+- [x] `lot_size` 100 for stocks (fracionário is a different ticker, suffix `F`), 1 for FIIs
+- [x] `point_value` for futures: WIN = 0.20 BRL/point, WDO = 10.00 BRL/point. Seeded from
       `data/contracts.json`, not from brapi
-- [ ] Sync command: pull the universe, upsert, mark absent tickers `active = false`
+- [x] Sync command: pull the universe, upsert, mark absent tickers `active = false`
 
 **The admission list:**
 
-- [ ] `symbols.tracked BOOLEAN NOT NULL DEFAULT FALSE` — true means "ingest candles for this."
+- [x] `symbols.tracked BOOLEAN NOT NULL DEFAULT FALSE` — true means "ingest candles for this."
       **It never goes back to false.** That one column is the entire mechanism; there is no
       membership table, no validity intervals, no join on the read path
-- [ ] `tracked` is distinct from `active`. `active` says the ticker still exists on brapi;
+- [x] `tracked` is distinct from `active`. `active` says the ticker still exists on brapi;
       `tracked` says we want its history. A delisted ex-member is `tracked = true, active = false`
       and simply stops producing new bars
-- [ ] `data/indexes/<index>-<YYYY>-<MM>.json`, one hand-written file per check, committed.
+- [x] `data/indexes/<index>-<YYYY>-<MM>.json`, one hand-written file per check, committed.
       **Git is the record** — no scraper, no extra service, every change a reviewable diff.
       ~200 tickers three times a year is not worth automating until it is
-- [ ] Sync command: union the newest files, set `tracked = true` on anything not already tracked.
+- [x] Sync command: union the newest files, set `tracked = true` on anything not already tracked.
       Tickers that disappeared from the files are **not touched**. The operation is idempotent and
       monotonic, which makes it safe to run carelessly
-- [ ] Monthly job reports the diff — new admissions, and departures as information only. It does
+- [x] Monthly job reports the diff — new admissions, and departures as information only. It does
       not mutate anything on its own
-- [ ] **B3 rebalances quarterly** — cycles start the first business day of January, May and
+- [x] **B3 rebalances quarterly** — cycles start the first business day of January, May and
       September, with prévias published beforehand. A monthly check is more often than strictly
       needed, which is the right call: it also catches mid-cycle entries from spin-offs and IPOs
       promoted into an index, which don't wait for the calendar
@@ -300,9 +303,9 @@ CREATE TABLE symbols (
 > Keeping ex-members is what avoids **survivorship bias** in everything ingested from project
 > start onward: the losers stay in the sample instead of vanishing when they drop out of SMLL.
 > The backfilled 5 years are a different story — see the traps.
-- [ ] B3 holiday calendar in `data/b3_holidays.json` + a `sessions` lookup. Regular session
+- [x] B3 holiday calendar in `data/b3_holidays.json` + a `sessions` lookup. Regular session
       10:00–17:00 America/Sao_Paulo. Needed by the resampler and by "N bars ago"
-- [ ] Commands ship **inside the same image** as subcommands (`/alvo sync-symbols`), run via
+- [x] Commands ship **inside the same image** as subcommands (`/alvo sync-symbols`), run via
       `docker compose run --rm app sync-symbols`. A second binary means a second image to keep in
       sync with the first
 
@@ -311,6 +314,66 @@ tickers resolve with correct lot sizes.
 
 > Never delete a symbol row. A delisted ticker whose candles vanish is **survivorship bias** baked
 > into every future backtest. `active = false` and keep the history.
+
+### Decisions this phase forced
+
+**The kind enum has no `etf`.** BOVA11 and friends are structurally units to the classifier —
+`XXXX11` cannot be told apart from a FII or a unit by ticker alone. It costs nothing today because
+IBOV/IBrX/SMLL are equity indexes containing neither, and the per-ticker override list in
+`data/contracts.json` handles any exception by hand. Reopen it if FIIs ever get admitted; that's a
+migration on one CHECK constraint.
+
+**`ClassifyTicker` refuses rather than guesses.** An unclassifiable ticker in an admission file
+fails the whole sync instead of landing as a default `stock`. The files are hand-written and
+committed, so a typo is exactly the thing a loud failure should catch. The trap it avoids is real:
+`KLBN11` matches the futures pattern (`KLB` + month code `N` + `11`), so futures are recognised by
+an explicit root list, never by shape alone.
+
+**Contract roots are seeded as symbols, `tracked = false`.** `WIN` as a row is the continuous
+back-adjusted series Phase 11 will build; the dated contracts (`WINZ25`) are separate symbols that
+only exist once a Pro token can enumerate them.
+
+**Every HTTP response counts against quota, including retries.** A 429 that gets retried three
+times is recorded as three requests. Pessimistic on purpose — the number exists to stop a backfill
+before it dies, and overcounting fails safe in that direction.
+
+**Enrichment is bounded by the token.** Without `BRAPI_TOKEN` the sync only asks brapi about the
+four free tickers and derives everything else locally, so `sync-symbols` is offline-safe and costs
+zero quota by default. `--dry-run` touches neither the network nor the database and is what the
+monthly admission check runs.
+
+**The names come from brapi, the mechanics never do.** `lot_size`, `tick_size` and `point_value`
+are derived from the ticker shape or read from `data/contracts.json`. brapi only ever fills in
+`short_name`, `long_name` and `currency`. A backtest's fill arithmetic does not depend on a
+third-party field that might change shape.
+
+> **Status: done and verified.** `make sqlc` generates cleanly — the `sqlc.yaml` overrides land
+> `float64` on the numerics and `*time.Time` on the nullable dates, so no `pgtype` reaches the
+> service layer. `make up` applies `00002` and `00003`, and `docker compose run --rm app
+> sync-symbols` populates `symbols` and `brapi_usage`. Unit tests cover the client, the limiter,
+> the classifier, the calendar and the admission diff, all offline against fixtures.
+>
+> Carried into later phases, deliberately:
+> - **The admission list is a placeholder.** `data/indexes/dev-2026-08.json` holds the four free
+>   tickers and nothing else. Real IBOV/IBrX-100/SMLL compositions are Phase 12's first task, by
+>   the plan's own sequencing — inventing a 200-ticker list now would commit a wrong file to the
+>   record that git is supposed to keep.
+> - **`/api/v1/admin/brapi-usage` is unauthenticated.** It returns nothing but daily request
+>   counts. Phase 4 puts it behind `RequireAuth` when the middleware exists.
+> - **The 2020–2023 holidays need checking against B3's published calendar.** The generated file
+>   assumes B3 dropped the São Paulo municipal holidays (25/01, 09/07) from 2022 and picked up
+>   20/11 again in 2024 as a national holiday. Easter-derived dates are computed, not typed, so
+>   Carnival, Good Friday and Corpus Christi are safe. Gap detection in Phase 2 depends on the
+>   rest being right for the backfill window.
+> - **`/available` response shape is still unobserved.** `/quote` is confirmed against the four
+>   free tickers — `longName` and `currency` come back correctly, and quota accounting recorded
+>   exactly four requests for four tickers at one per request. `/available` returning
+>   `{"indexes":[],"stocks":[]}` as arrays of strings remains modelled from the docs, and only
+>   affects `--prune`, which is off by default.
+> - **brapi's `shortName` echoes the ticker on the free tier**, so `symbols.short_name` duplicates
+>   `symbols.ticker` for anything synced from the API; `long_name` carries the real name. Phase 3's
+>   autocomplete should fall back to `long_name` rather than trusting `short_name` to be a display
+>   name.
 
 ---
 

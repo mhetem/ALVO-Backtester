@@ -4,7 +4,7 @@ COMPOSE_PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml
 SQLC_IMAGE   := sqlc/sqlc:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc build test vet fmt check frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
+.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols build test vet lint sec fmt check frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
 
 help:
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -39,6 +39,9 @@ migrate: ## Apply pending migrations by recreating the app (goose runs on startu
 sqlc: ## Regenerate internal/db from sql/schema + sql/queries
 	docker run --rm -v "$(CURDIR):/src" -w /src $(SQLC_IMAGE) generate
 
+sync-symbols: ## Seed symbols from data/indexes + data/contracts.json. ARGS="--dry-run" to preview
+	$(COMPOSE) run --rm app sync-symbols $(ARGS)
+
 frontend: ## Build the Svelte app into frontend/dist
 	cd frontend && npm ci && npm run build
 
@@ -51,10 +54,16 @@ test: ## Run the Go test suite
 vet: ## Run go vet
 	go vet ./...
 
+lint: ## Run staticcheck
+	staticcheck ./...
+
+sec: ## Run gosec
+	gosec ./...
+
 fmt: ## Format Go sources
 	gofmt -w .
 
-check: vet test ## Vet then test
+check: vet lint sec test ## Vet, lint, scan, then test
 	cd frontend && npm run check
 
 I-KNOW-THIS-DELETES-THE-CANDLE-STORE: ## Destroy the database volume. Rebuilding it costs a month of brapi Pro
