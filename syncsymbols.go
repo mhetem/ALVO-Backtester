@@ -29,7 +29,7 @@ func runSyncSymbols(ctx context.Context, cfg config.Config, log *slog.Logger, ar
 	prune := flags.Bool("prune", false, "mark symbols brapi no longer lists as inactive")
 	batch := flags.Int("batch", 1, "tickers per brapi request (1 on Free, 10 on Startup, 20 on Pro)")
 
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}

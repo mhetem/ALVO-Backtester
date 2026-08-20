@@ -25,7 +25,7 @@ const (
 	shutdownTimeout = 15 * time.Second
 )
 
-var commands = []string{"serve", "sync-symbols"}
+var commands = []string{"serve", "sync-symbols", "backfill", "sync-candles", "gaps", "candles"}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -56,6 +56,14 @@ func run(args []string) error {
 		return runServe(ctx, cfg, log)
 	case "sync-symbols":
 		return runSyncSymbols(ctx, cfg, log, args)
+	case "backfill":
+		return runBackfill(ctx, cfg, log, args)
+	case "sync-candles":
+		return runSyncCandles(ctx, cfg, log, args)
+	case "gaps":
+		return runGaps(ctx, cfg, log, args)
+	case "candles":
+		return runCandles(ctx, cfg, log, args)
 	default:
 		return fmt.Errorf("unknown command %q (want one of: %s)", command, strings.Join(commands, ", "))
 	}

@@ -13,6 +13,34 @@ type BrapiUsage struct {
 	Requests int32     `json:"requests"`
 }
 
+type Candle struct {
+	SymbolID  int64     `json:"symbol_id"`
+	Timeframe string    `json:"timeframe"`
+	Ts        time.Time `json:"ts"`
+	Open      float64   `json:"open"`
+	High      float64   `json:"high"`
+	Low       float64   `json:"low"`
+	Close     float64   `json:"close"`
+	AdjClose  *float64  `json:"adj_close"`
+	Volume    int64     `json:"volume"`
+}
+
+type IngestRun struct {
+	ID         int64      `json:"id"`
+	SymbolID   int64      `json:"symbol_id"`
+	Timeframe  string     `json:"timeframe"`
+	RangeStart time.Time  `json:"range_start"`
+	RangeEnd   time.Time  `json:"range_end"`
+	Status     string     `json:"status"`
+	HttpStatus *int32     `json:"http_status"`
+	Bars       int32      `json:"bars"`
+	Rejected   int32      `json:"rejected"`
+	Error      *string    `json:"error"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	DurationMs *int32     `json:"duration_ms"`
+}
+
 type Symbol struct {
 	ID         int64      `json:"id"`
 	Ticker     string     `json:"ticker"`

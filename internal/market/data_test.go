@@ -83,6 +83,49 @@ func TestCommittedCalendarCoversTheDevelopmentWindow(t *testing.T) {
 	}
 }
 
+func TestCommittedCalendarClosesTheLastBusinessDayOfEachYear(t *testing.T) {
+	calendar := committedCalendar(t)
+	minYear, maxYear := calendar.Years()
+
+	for year := minYear; year <= maxYear; year++ {
+		closure := calendar.Date(year, time.December, 31)
+		for closure.Weekday() == time.Saturday || closure.Weekday() == time.Sunday {
+			closure = closure.AddDate(0, 0, -1)
+		}
+
+		if calendar.IsTradingDay(closure) {
+			t.Errorf("%s (%s) is the last business day of %d and B3 closes it, but the calendar has it trading",
+				closure.Format(time.DateOnly), closure.Weekday(), year)
+		}
+	}
+}
+
+func TestCommittedCalendarMatchesWhatB3ActuallyDid(t *testing.T) {
+	calendar := committedCalendar(t)
+
+	for _, tc := range []struct {
+		year    int
+		month   time.Month
+		day     int
+		trading bool
+		why     string
+	}{
+		{2020, time.July, 9, true, "B3 traded the Sao Paulo municipal holidays in 2020"},
+		{2020, time.November, 20, true, "Consciencia Negra was not a B3 closure in 2020"},
+		{2021, time.July, 9, false, "B3 observed Revolucao Constitucionalista in 2021"},
+		{2022, time.December, 30, false, "31/12/2022 fell on a Saturday, so the 30th was the last session"},
+		{2023, time.December, 29, false, "31/12/2023 fell on a Sunday, so the 29th was the last session"},
+		{2026, time.June, 4, false, "Corpus Christi"},
+		{2026, time.June, 5, true, "B3's published 2026 calendar trades the Friday after Corpus Christi"},
+		{2026, time.November, 20, false, "Consciencia Negra is a national holiday from 2024"},
+	} {
+		day := calendar.Date(tc.year, tc.month, tc.day)
+		if got := calendar.IsTradingDay(day); got != tc.trading {
+			t.Errorf("%s IsTradingDay = %v, want %v: %s", day.Format(time.DateOnly), got, tc.trading, tc.why)
+		}
+	}
+}
+
 func TestCommittedDataPlansTheFourFreeTickers(t *testing.T) {
 	contracts, err := LoadContracts(repoFS(), ContractsFile)
 	if err != nil {

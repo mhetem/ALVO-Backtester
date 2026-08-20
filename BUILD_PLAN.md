@@ -85,8 +85,8 @@ Verified against brapi's docs and pricing, July 2026:
 |---|---|---|---|
 | Requests / month | 15,000 | 150,000 | 500,000 |
 | Tickers per request | 1 | 10 | 20 |
-| Timeframes | **daily only** | **daily only** | 1m, 5m, 15m, 30m, 60m, 1d, 1wk, 1mo |
-| History depth | short (verify) | 1 year | 15+ years |
+| Timeframes | ~~daily only~~ **all of them** (measured) | **daily only** | 1m, 5m, 15m, 30m, 60m, 1d, 1wk, 1mo |
+| History depth | ~~short (verify)~~ **10y daily, ~60d intraday** (measured) | 1 year | 15+ years |
 | Quote freshness | — | 15 min | 5 min |
 | Futures / options | no | no | yes |
 
@@ -98,9 +98,11 @@ Ranges: `1d 2d 5d 7d 1mo 3mo 6mo 1y 2y 5y 10y ytd max`.
 1. **The entire build runs on four tickers, on Free.** PETR4, MGLU3, VALE3 and ITUB4 are free,
    tokenless and unlimited. Phases 0–11 are developed and demoed against those four with daily
    candles, spending zero of the 15k quota. Nothing in the plan blocks on paid data.
-2. **Intraday is Pro-only, so 5m stays dark until go-live.** The ingestion and resampling code is
-   timeframe-agnostic from Phase 2 and tested against synthetic 5m fixtures. Until the token is
-   upgraded the only real series is `1d`. The charts are coarser; no phase is blocked.
+2. ~~**Intraday is Pro-only, so 5m stays dark until go-live.**~~ **Corrected in Phase 2: the free
+   tier serves 5m for the free tickers, about 60 days deep.** The ingestion and resampling code is
+   timeframe-agnostic and tested against both a synthetic 5m fixture and a real one. What Pro buys
+   is *depth*, not access: five years of 5m instead of two months. No phase is blocked either way,
+   and the 5m path is now exercisable against real bars before the Pro month rather than after.
 3. **One month of Pro seeds the whole history.** This is the cheap path and it works out
    comfortably: Pro is 500k requests/month at 20 tickers per request. Backfilling ~200 symbols ×
    5 years of 5m, chunked conservatively at one request per symbol per month of history, is
@@ -223,7 +225,11 @@ ENTRYPOINT ["/alvo"]
       `make restart` to pick up changes — no watcher dependency in Phase 0). Vite dev server
       proxies `/api` to the app container
 - [x] `Makefile` wrapping the incantations: `up`, `up-dev`, `down`, `logs`, `psql`, `migrate`,
-      `sqlc`, `test`
+      `sqlc`, `test`. *Phase 2 note: `check` type-checks the frontend inside the `web` container
+      rather than on the host. The dev override mounts a named volume over
+      `frontend/node_modules`, so the host copy of that directory is an empty mount point and a
+      host-side `npm run check` finds no `svelte-check`. CI is unaffected — a fresh checkout has
+      no volume shadowing it and runs `npm ci` on the runner*
 - [x] `.env.example` committed; `.env` gitignored (already is)
 
 **Done when:** a fresh clone with only Docker installed runs `make up` and gets a healthy
@@ -307,7 +313,9 @@ CREATE TABLE symbols (
       10:00–17:00 America/Sao_Paulo. Needed by the resampler and by "N bars ago"
 - [x] Commands ship **inside the same image** as subcommands (`/alvo sync-symbols`), run via
       `docker compose run --rm app sync-symbols`. A second binary means a second image to keep in
-      sync with the first
+      sync with the first. *Phase 2 note: the Makefile targets pass `--build`, because
+      `compose run` otherwise reuses whatever image exists and silently runs last week's binary —
+      which reads as "my change did nothing" rather than as a stale build*
 
 **Done when:** `docker compose run --rm app sync-symbols` populates `symbols`, and the four free
 tickers resolve with correct lot sizes.
@@ -396,34 +404,42 @@ CREATE TABLE candles (
 );
 ```
 
-- [ ] Column is `timeframe`, **not** `interval` — `interval` is a Postgres type name and using it
+- [x] Column is `timeframe`, **not** `interval` — `interval` is a Postgres type name and using it
       as a column forces quoting everywhere and confuses sqlc
-- [ ] `ts` is the **bucket open**, in UTC, always. Bucketing happens in exchange local time; storage
+- [x] `ts` is the **bucket open**, in UTC, always. Bucketing happens in exchange local time; storage
       is UTC. Mixing these is how you get 15m bars that straddle the open
-- [ ] Pin the container's `TZ` to UTC in compose. A resampler that behaves differently on your
+- [x] Pin the container's `TZ` to UTC in compose. A resampler that behaves differently on your
       machine than in the image is a bug you will chase for a day
-- [ ] Only `5m` and `1d` are ever written. A `timeframe` outside those two reaching the insert path
+- [x] Only `5m` and `1d` are ever written. A `timeframe` outside those two reaching the insert path
       is a bug, and a CHECK constraint should say so
-- [ ] Backfill command: `--symbol --timeframe --from --to`, idempotent, `ON CONFLICT DO UPDATE`,
+- [x] Backfill command: `--symbol --timeframe --from --to`, idempotent, `ON CONFLICT DO UPDATE`,
       resumable — it will eventually run for hours against ~200 symbols and must survive being killed
-- [ ] Gap detection against the session calendar: a missing bar on a trading day is a hole to refill;
+- [x] Gap detection against the session calendar: a missing bar on a trading day is a hole to refill;
       a missing bar on a holiday is correct
-- [ ] `internal/market/resample.go`: `5m → 15m` (3 bars), `→ 30m` (6), `→ 1h` (12). O = first open,
+- [x] `internal/market/resample.go`: `5m → 15m` (3 bars), `→ 30m` (6), `→ 1h` (12). O = first open,
       H = max, L = min, C = last close, V = sum. Buckets anchored to **session open**, not to
       midnight — the 420-minute session divides evenly by all three, so no partial buckets exist
-- [ ] `1d` is read from storage, never folded from 5m
-- [ ] Resampled series are computed on read and cached, not stored — until profiling says otherwise
-- [ ] `testdata/`: committed OHLCV fixtures for the four free tickers plus a synthetic 5m series.
+- [x] `1d` is read from storage, never folded from 5m
+- [x] Resampled series are computed on read and cached, not stored — until profiling says otherwise
+      *(computed on read by `market.CandleService.Load`, which Phase 3's handler wraps rather than
+      reimplements; the cache waits for profiling, per the bullet)*
+- [x] `testdata/`: committed OHLCV fixtures for the four free tickers plus a synthetic 5m series.
       Every test below runs offline against these. A test suite that needs a network call to brapi
       is a test suite that fails in CI and burns quota doing it
-- [ ] Split/dividend adjustment: `adj_close` populated from brapi's `dividends` data. An
+- [x] Split/dividend adjustment: `adj_close` populated from brapi's `dividends` data. An
       unadjusted series turns every split into a fake -50% gap and every backtest crossing one
-      into fiction
-- [ ] Scheduled sync: after session close, refresh the last N bars per active symbol
-- [ ] `ingest_runs` audit table: symbol, timeframe, range, status, http status, error, timings
+      into fiction *(brapi returns `adjustedClose` inline on each daily bar; a separate
+      `dividends` fetch turned out to be unnecessary — see the notes)*
+- [x] Scheduled sync: after session close, refresh the last N bars per active symbol
+- [x] `ingest_runs` audit table: symbol, timeframe, range, status, http status, error, timings
 
 **Done when:** five years of PETR4 daily candles are in Postgres, and the resampler turns the
 synthetic 5m fixture into 15m/30m/1h bars matching a hand-checked reference.
+
+`/alvo candles --symbol PETR4 --timeframe 1h` is how you watch that happen against the real store:
+it reads 5m through the same service the API will use, folds it, prints the candles, and closes
+with a reconciliation of volume, high and low against the base bars it folded. A resampler that
+loses or invents volume says so on the last line.
 
 > On Free, only `1d` has a source. The resampler is still written and tested now — against
 > synthetic 5m fixtures — so that upgrading the token is a config change, not a phase.
@@ -435,6 +451,179 @@ tickers a year — plus a quarter-million 1d rows that round to nothing. That fi
 in Phase 13 several times over. If it ever stops fitting, the escape hatches
 in order are: `PARTITION BY LIST (timeframe)`, then prune inactive symbols to 1d only, then store
 prices as `int` centavos instead of `NUMERIC` (~40% off the heap, at the cost of every read path).
+
+### What measuring brapi actually changed
+
+Four things were assumed in Phase 0 and turned out to be wrong. All were measured against the
+free tickers on 2026-08-20, tokenless, and the raw responses are committed under `testdata/`.
+
+**1. Intraday is not Pro-only.** `?interval=5m` returns real 5m bars on the free tier for the four
+free tickers. Retention is the catch: `range=3mo`, `range=1y` and `range=max` all return the same
+~60 days of history and stop. So the plan's "5m stays dark until go-live" is too pessimistic —
+5m is developable and testable against *real* data now, it just cannot reach back more than two
+months. The Pro month is still what buys five years of it.
+
+**2. Free daily history is 10 years, not "short (verify)".** PETR4 at `range=10y&interval=1d`
+returns 2,482 bars back to 2016-08-22. That closes the open question and means the entire
+development phase has more daily history than the 5-year target needs.
+
+**3. brapi serves two different 5m series depending on the requested range, and the short one is
+wrong.** This is the finding that changes the ingest design. Requesting the *same day* for the
+*same ticker* with `range=5d` or `range=1mo` returns one series; `range=3mo` or `range=1y` returns
+another. They are not a time shift or an adjustment factor — not one bar of 291 matched between
+the groups. Folding each back into a daily bar and comparing against the official stored `1d`
+settles which is right:
+
+| request window | sessions checked | folded O/H/L == official daily O/H/L |
+|---|---|---|
+| `<3mo` (`5d`, `1mo`) | 22 | **0** |
+| `>=3mo` (`3mo`, `1y`) | 43 | **39** |
+
+The short window silently drops the opening bars — the `<3mo` series for 2026-08-19 begins at
+10:15 and misses the day's open *and* its low, which is why its fold never reconciles.
+
+**And `startDate`/`endDate` cannot be used to escape it, because brapi ignores those parameters for
+intraday intervals entirely.** Measured the same day:
+
+| request | `usedRange` echoed | bars | which series |
+|---|---|---|---|
+| `interval=5m&startDate=`(-90d)`&endDate=`(today) | `1mo` | **0** | — |
+| `interval=5m&startDate=`(-30d)`&endDate=`(today) | `1mo` | 1798 | **the bad one** (81/81 bars identical to `range=1mo`, 0/80 to `range=3mo`) |
+| `interval=1d&startDate=2022-01-01&endDate=2022-12-31` | `1mo` | 250 | correct, dates honoured |
+
+So intraday is **range-token-only**: dates are silently discarded, the fallback is the defective
+one-month series, and asking for a window older than that returns nothing at all. Daily is
+unaffected — it honours the dates exactly, and the `usedRange: 1mo` echo is meaningless noise
+there.
+
+That makes the constraint structural rather than advisory. For `5m` the backfill picks the
+smallest range token that covers `--from..now` with a floor of `3mo` (`ingest.IntradayRange`),
+issues **one** request per symbol, and trims the response to the requested window client-side
+(`ChunkRequest.KeepFrom`/`KeepTo`). `--chunk` is rejected outright for 5m, and an explicit
+`--range` below three months is rejected by `ValidateIntradayRange`. `sync-candles` had the same
+trap in its tail refresh — refreshing yesterday through a narrow window would upsert the bad
+variant over good backfilled bars — and takes the same route: fetch `range=3mo`, keep only the
+tail. Same quota, no corruption.
+
+**4. The same measurement confirms trap #10 rather than refuting it.** Across those 43 sessions the
+folded close matched the official close **4** times. O/H/L reconcile; the close does not, because
+the closing auction is not in the intraday tape. Stored `1d` remains authoritative, and
+`TestFoldedIntradayReproducesTheOfficialDailyRange` asserts both halves — that O/H/L match and that
+the close does *not*.
+
+### Decisions this phase forced
+
+**A daily bar's `ts` is the session open, not midnight.** brapi dates daily bars at local midnight
+São Paulo (`03:00Z`). Storing that verbatim would mean `1d` and `5m` anchor differently, and any
+UTC-side date arithmetic would sit three hours from the day boundary. Instead `Calendar.BucketOpen`
+maps every bar — daily included — onto its session open, so PETR4's 2026-08-20 daily bar is stored
+at `13:00Z`. One rule for both timeframes, and "the bar for day D" is unambiguous.
+
+**Sessions are ragged, so the resampler folds what is there rather than what should be.** A full
+B3 session is 84 five-minute buckets, and 84 divides evenly by 3, 6 and 12 — that part of the plan
+holds. What does not hold is the assumption that all 84 are present: PETR4, the most liquid stock
+on the exchange, delivers 83 on a typical day, and VALE3 drops to 79. Bars with no trades simply
+do not exist. So a bucket aggregates whichever base bars fall inside it, and a bucket with none is
+not emitted at all. The synthetic fixture holes the second session deliberately (its opening bar
+and two mid-session bars) to keep that behaviour pinned.
+
+**A gap report is only meaningful against history that could exist.** `gaps` first defaulted to a
+five-year window whatever the timeframe, which for 5m on Free means 1,204 of 1,248 sessions report
+as missing — every one of them simply older than brapi's ~60-day intraday retention. That is 96%
+noise hiding the 44 sessions worth looking at. The default is now **each symbol's earliest stored
+bar**, so the question the report answers is "is the history I have complete?" rather than "is the
+history I have five years long?". `--from` still forces an explicit window when the second question
+is the one being asked, and a symbol with nothing stored prints one `EMPTY` line instead of
+enumerating every session it lacks.
+
+**Gap detection reports at session granularity, not bar granularity.** Treating every absent 5m
+slot as a hole would flag five bars a day on a blue chip and hundreds on an illiquid one — noise
+that hides the thing worth seeing. `GapReport` separates *missing* (a trading day with zero bars,
+a real hole to refill) from *short* (a session present but under-covered, which is normal), and
+`Clean()` only fails on the former. A bar that lands on no session at all is a third category,
+`Unexpected`, and it does fail the report.
+
+**Bad bars are rejected individually; only the request failing kills the chunk.** A backfill that
+runs for hours against 200 symbols must not die because one ticker returned a bar with `high`
+below `low`. `Normalize` drops such bars with a reason, the count lands in `ingest_runs.rejected`,
+and a sample is logged. The database keeps the same invariants as `CHECK` constraints, so a bug
+that gets past `Normalize` fails loudly at the write rather than storing fiction.
+
+**"Tokenless" is four tickers, not the free tier.** `^BVSP` is seeded `tracked = true` because
+Phase 10 benchmarks against IBOV, but brapi answers `/quote/^BVSP` with `401 Token de autenticação
+não fornecido` — the free *tier* is not the same thing as the four *tokenless* symbols. So
+`Ingester.Reachable` gates every symbol on `HasToken() || IsFreeTicker(...)`, the same guard Phase 1
+already applied to name enrichment, and an unreachable symbol is reported as a **skip, not a
+failure**: a `--universe` run on Free must exit 0, because a token-only ticker in the universe is
+the expected state until Phase 12, not an error anyone can act on.
+
+**Resume is a coverage question, with one escape hatch for holes that will never fill.** The
+backfill has no cursor to lose: before fetching a chunk it asks whether that window's trading days
+already have bars, and skips if they do. That is safe to kill, restart and re-run. But pure
+coverage has a failure mode that the first real gap report exposed — brapi is simply missing
+2026-06-05 for all four tickers, on a day B3's published calendar confirms was a normal session.
+No number of refetches will produce a bar that the provider does not have, so that chunk would be
+re-requested on every run forever: invisible at four tickers, ~200x the cost at full universe. So
+a chunk is also skipped when a prior `ingest_runs` row with status `ok` or `empty` covers it —
+**but only if the window ends before today**, so the current chunk always re-checks coverage and
+keeps picking up new sessions. `--force` overrides both.
+
+
+
+> **Status: done, and exercised end to end against the live database.**
+>
+> The resampler is tested at three levels. Against `testdata/synthetic_15m|30m|1h.json`, computed
+> by an implementation written independently of the Go code, with one bucket verified by hand.
+> Against the committed *real* PETR4 5m fixture, where the assertions are the invariants rather
+> than fixed numbers: total volume, high and low survive the fold unchanged, every bucket is
+> aligned to its own session open, every bucket re-folds to exactly the base bars inside it, and
+> the per-session bucket counts land on 28/14/7. And against the live store through
+> `/alvo candles`, which reconciles the same three quantities on real data.
+>
+> `Normalize` is checked against the committed raw brapi responses for all four free tickers.
+> `go test -race ./...`, `go vet ./...` and `gofmt` are clean.
+>
+> **The daily backfill has since run for real.** `make backfill ARGS="--universe --timeframe 1d"`
+> stored 4,487 bars across the four free tickers over 2021-08-20..2026-08-20 — ~249 bars a year
+> per symbol, which is the right shape for a ~246-session year. Resume works: a second run skipped
+> the chunks already covered. The token-bucket limiter and backoff earned their keep too — brapi
+> answered one request with `429 Limite do sandbox excedido`, the client waited 52s and the chunk
+> then stored normally.
+>
+> **`gaps --universe --timeframe 1d` has run**, and did its job: 1,247/1,250 sessions per ticker,
+> with the three shortfalls traced to the calendar defects in the table above rather than to the
+> ingest path. After the fix the only remaining hole over 2021-2026 should be 2026-06-05, which is
+> brapi's, not ours.
+>
+> **5m is populated too**: ~3,590 bars per ticker over 44 sessions, ~81.6 bars a session, which is
+> the shape real B3 intraday has (79-83 of a possible 84). 43 of the 44 sessions are "short" and
+> that is normal, not a defect. The history starts 2026-06-22 and cannot be extended without a Pro
+> token.
+>
+> Carried into Phase 3, deliberately:
+> - **Resampled series are not cached.** `CandleService.Load` folds on every call. The plan says to
+>   wait for profiling and Phase 3 owns the read path, so that is where an `ETag` on closed ranges
+>   and any caching belong.
+> - **`Load` bounds the *base* fetch, not the output.** A 5m read capped at 50,000 rows can end in
+>   a partially-folded final bucket. Harmless for a whole-session window, wrong for the cursor
+>   pagination Phase 3 needs — that endpoint has to page on bucket boundaries, not base rows.
+> - **The 2016-2019 holidays are absent from the calendar file**, which does not matter at a
+>   5-year window but would if the backfill range is ever widened past 2020.
+> - **2026-06-05 stays missing forever.** brapi lacks the bar on a session B3 held. It is the
+>   proof case for the `ingest_runs` resume shortcut, and the reason `gaps` can legitimately
+>   report a hole that no action will close.
+> - **Watch for chunks that can never come back clean.** Resume skips a chunk only when its window
+>   has no missing session, so a window containing a session brapi genuinely lacks — or one the
+>   holiday file gets wrong — is re-requested on every run, forever. Harmless at four tickers,
+>   ~200x more expensive at full universe. If the `gaps` report shows persistent holes, switch the
+>   resume check to also honour a prior successful `ingest_runs` row covering the window.
+> - **`--prune`-style verification of `adj_close` against a known split is untested.** No split
+>   falls inside the committed fixtures' window. Phase 12 spot-checks a real one.
+> - ~~**The 2020-2023 holidays still need checking against B3's published calendar**~~ — **done**,
+>   by cross-checking the file against ten years of brapi bars rather than by reading the calendar.
+>   Five discrepancies, four of them ours; see the table above. That technique is the one to reuse
+>   whenever the file is extended: a day all four blue chips are missing is a closure, and a day
+>   the file calls closed but that has bars is a typo.
 
 ---
 
@@ -754,7 +943,11 @@ is already written and timeframe-agnostic. Do it against the production box, not
 - [ ] Dry-run the backfill: no writes, just count the requests it *would* make and print the total
       against the 500k quota. Run this before the real one, every time
 - [ ] Determine the real chunk size empirically — how much 5m history brapi returns per request.
-      The budget above assumed one month per request; measure it, don't assume it
+      The budget above assumed one month per request; measure it, don't assume it. **Floor: three
+      months.** Phase 2 measured that a shorter window returns a different and wrong 5m series, so
+      a one-month chunk is off the table regardless of what the quota arithmetic prefers. Confirm
+      the defect's shape on Pro before the full run: fetch one symbol at two window sizes and
+      reconcile both folds against the stored `1d`
 - [ ] Backfill 1d first (cheap, works on any tier, and gives every symbol a usable chart
       immediately), then 5m
 - [ ] Run it resumable and rate-limited, in the background, in the container. It will take hours.
@@ -839,6 +1032,19 @@ Collected here because the code carries no comments — this is where the reason
 10. **The daily bar is not the sum of the 5m bars.** B3's official daily close comes from the
     closing auction, which intraday bars don't capture. This is why `1d` is stored rather than
     folded. If a reconciliation check ever flags the two disagreeing, the stored `1d` wins.
+    *Measured in Phase 2: over 43 sessions the folded O/H/L matched the official daily bar 39
+    times, the folded close matched 4 times.*
+12. **brapi's 5m series depends on the requested range, and `startDate`/`endDate` don't work for
+    it at all.** Intraday requests silently discard the dates and fall back to `range=1mo`, which
+    returns a different — and demonstrably wrong — series that is missing the opening bars of every
+    session. Only an explicit `range` token of `3mo` or wider returns the series that reconciles
+    against the official daily bar. So 5m is always one range request per symbol, trimmed
+    client-side; never a date window, and never a narrow tail refresh, which would upsert bad bars
+    over good ones. Daily is unaffected and honours dates normally. Evidence in Phase 2's notes.
+13. **Sessions are not uniformly populated.** A full B3 day is 84 five-minute buckets but a real
+    one delivers 79-83; bars with no trades don't exist. Anything that assumes a fixed bar count
+    per session — resampling, gap detection, warmup arithmetic — has to fold what is present
+    rather than what should be.
 11. **Development ran on four large caps.** PETR4, VALE3, ITUB4 and MGLU3 are liquid, gap rarely,
     and never halt. The first backfill of illiquid tickers will surface zero-volume bars, missing
     sessions and stale prices that four blue chips never exercised. Expect Phase 12 to find bugs
@@ -859,13 +1065,17 @@ Collected here because the code carries no comments — this is where the reason
 
 ## Open questions
 
-- **Free-tier history depth.** Startup is documented at 1 year, Pro at 15+; the Free number wasn't
-  confirmed. Measure it against PETR4 in Phase 2 — it sets how much daily history the whole
-  development phase has to work with.
+- ~~**Free-tier history depth.**~~ **Answered in Phase 2: 10 years of daily** (PETR4, `range=10y`,
+  2,482 bars back to 2016-08-22), and **~60 days of intraday**, which does not extend no matter
+  what range is asked for.
 - **5m history depth on Pro, and per-request chunk size.** Pro advertises 15+ years, but
   intraday retention is usually shorter than daily on this class of provider, and how much 5m
   comes back per request is unmeasured. Both feed directly into Phase 12's budget. Measure on
-  day one of the Pro month, before launching the full backfill.
+  day one of the Pro month, before launching the full backfill. **Phase 2 added a hard
+  constraint on the answer:** whatever chunk size is chosen must be at least three months, or the
+  wrong intraday series comes back. Free retention caps at ~60 days, so whether the `<3mo` defect
+  persists on Pro at real depth cannot be tested until the token is upgraded — check it first, by
+  fetching one symbol at two window sizes and reconciling both against the stored `1d`.
 - **Futures coverage.** brapi lists futures as Pro-only; whether WIN/WDO come with usable
   intraday history is unverified. Phase 11's rollover work depends on the answer, and it can't
   be checked until the Pro month.

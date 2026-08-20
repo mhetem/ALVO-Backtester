@@ -22,13 +22,13 @@ type Quote struct {
 }
 
 type Bar struct {
-	Date          int64   `json:"date"`
-	Open          float64 `json:"open"`
-	High          float64 `json:"high"`
-	Low           float64 `json:"low"`
-	Close         float64 `json:"close"`
-	AdjustedClose float64 `json:"adjustedClose"`
-	Volume        int64   `json:"volume"`
+	Date          int64    `json:"date"`
+	Open          float64  `json:"open"`
+	High          float64  `json:"high"`
+	Low           float64  `json:"low"`
+	Close         float64  `json:"close"`
+	AdjustedClose *float64 `json:"adjustedClose"`
+	Volume        int64    `json:"volume"`
 }
 
 func (b Bar) TS() time.Time { return time.Unix(b.Date, 0).UTC() }
