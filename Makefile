@@ -4,7 +4,7 @@ COMPOSE_PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml
 SQLC_IMAGE   := sqlc/sqlc:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols backfill sync-candles gaps candles build test vet lint sec fmt check check-frontend frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
+.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols backfill sync-candles gaps candles build test vet lint sec fmt fmt-check check check-frontend frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
 
 help:
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -62,8 +62,8 @@ frontend: ## Build the Svelte app into frontend/dist
 build: frontend ## Build the Go binary against a freshly built frontend
 	go build -o ./tmp/alvo .
 
-test: ## Run the Go test suite
-	go test ./...
+test: ## Run the Go test suite under the race detector, as CI does
+	go test -race ./...
 
 cover: ## Run the Go test suite with cover flag
 	go test ./... -cover
@@ -80,10 +80,18 @@ sec: ## Run gosec, skipping sqlc's generated output
 fmt: ## Format Go sources
 	gofmt -w .
 
+fmt-check: ## Fail if any Go source is not gofmt-clean, the way CI does
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
+
 check-frontend: ## Type-check the Svelte app inside the web container, where its deps live
 	$(COMPOSE_DEV) run --rm --no-deps web sh -c "npm install && npm run check"
 
-check: vet lint sec test check-frontend ## Vet, lint, scan, test, then type-check the frontend
+check: fmt-check vet lint sec test check-frontend ## Everything CI runs: format, vet, lint, scan, test, type-check
 	@echo "all checks passed"
 
 I-KNOW-THIS-DELETES-THE-CANDLE-STORE: ## Destroy the database volume. Rebuilding it costs a month of brapi Pro

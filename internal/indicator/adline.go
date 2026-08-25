@@ -16,7 +16,7 @@ type accumulation struct {
 
 func (a *accumulation) push(c Candle) {
 	if c.High > c.Low {
-		a.total += ((c.Close-c.Low)-(c.High-c.Close)) / (c.High - c.Low) * c.Volume
+		a.total += ((c.Close - c.Low) - (c.High - c.Close)) / (c.High - c.Low) * c.Volume
 	}
 }
 

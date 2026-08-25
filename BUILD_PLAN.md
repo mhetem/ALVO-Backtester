@@ -1363,6 +1363,14 @@ sequential state machines, and the Python is a line-by-line transcription of the
 independent derivation. It still catches transcription slips and pins the values against future
 edits, but it is not the same evidence the other thirty registrations carry.
 
+**`make check` was not what CI runs, and thirty-two hand-written files were what finally proved
+it.** CI gates on `gofmt -l .` and runs its tests under `-race`; `make check` did neither, so a
+tree could pass every local check and still come back red on formatting alone — which is the one
+failure mode a phase that adds forty files is most likely to hit. The two are now the same list:
+`fmt-check` fails on any file `gofmt` would rewrite, using CI's exact shape, and `make test`
+carries `-race`. `make fmt` stays the fixer. The general rule this phase paid to learn: a `check`
+target that is *nearly* CI is worse than no check target, because it is trusted.
+
 **`GET /api/v1/indicators` serves the registry plus what the picker cannot derive.** Name, title,
 group, overlay flag, `sourced` flag, parameter schema with kind/default/min/max, output names — all
 straight off `Spec`. Two additions earn their place: the canonical `key` built from the defaults, so
@@ -1378,16 +1386,20 @@ response. Cached an hour — it changes only when the binary does.
 > golden comparison passed on all 44 cases — thirty-two new indicators agreeing with a second
 > implementation in another language to 6 decimals across 200 real PETR4 bars, on the first attempt.
 >
+> `make check` then passed and CI did not, which is the Makefile defect written up above rather than
+> anything in the library: CI gates on `gofmt -l .` and `make check` did not. After `make fmt`, the
+> two run the same list.
+>
 > Still to run:
 >
 > ```
-> python3 testdata/indicators_reference.py     # only if indicator_golden.json is not already current
+> make fmt
 > make check
 > ```
 >
-> The generator appends 35 cases keyed by canonical indicator key — 44 in all — and rewrites
-> `indicator_bars.json` byte-identically from the same committed brapi response. `vet`,
-> `staticcheck`, `gosec` and the frontend type-check have not been run against this phase at all.
+> If `indicator_golden.json` is ever not current, `python3 testdata/indicators_reference.py`
+> regenerates it: 35 appended cases keyed by canonical indicator key, 44 in all, and
+> `indicator_bars.json` rewritten byte-identically from the same committed brapi response.
 >
 > Carried into later phases, deliberately:
 > - **Nothing draws any of it.** Phase 7 owns the picker, the panes and the colours; every catalogue
