@@ -81,6 +81,35 @@ func (c *Calendar) BucketCount(tf Timeframe, session Session) int {
 	return int((session.Duration() + width - 1) / width)
 }
 
+func (c *Calendar) FutureBuckets(tf Timeframe, after time.Time, count int) []time.Time {
+	buckets := []time.Time{}
+	if count < 1 || !tf.Valid() {
+		return buckets
+	}
+
+	cursor := after.In(c.loc)
+	for len(buckets) < count {
+		if session, ok := c.Session(cursor); ok {
+			for _, bucket := range c.SessionBuckets(tf, session) {
+				if bucket.After(after) {
+					buckets = append(buckets, bucket.UTC())
+					if len(buckets) == count {
+						return buckets
+					}
+				}
+			}
+		}
+
+		next, err := c.NextTradingDay(cursor)
+		if err != nil {
+			return buckets
+		}
+		cursor = next
+	}
+
+	return buckets
+}
+
 func (c *Calendar) SessionBuckets(tf Timeframe, session Session) []time.Time {
 	count := c.BucketCount(tf, session)
 	buckets := make([]time.Time, 0, count)

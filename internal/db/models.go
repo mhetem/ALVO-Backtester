@@ -27,6 +27,15 @@ type Candle struct {
 	Volume    int64     `json:"volume"`
 }
 
+type ChartLayout struct {
+	UserID    uuid.UUID `json:"user_id"`
+	Layout    []byte    `json:"layout"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+}
+
 type IngestRun struct {
 	ID         int64      `json:"id"`
 	SymbolID   int64      `json:"symbol_id"`

@@ -32,6 +32,11 @@ const (
 	msgBadAccess      = "invalid or expired access token"
 )
 
+const (
+	refreshCookieName = "alvo_refresh"
+	refreshCookiePath = "/api/v1/auth"
+)
+
 type credentialsBody struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -52,8 +57,9 @@ type sessionBody struct {
 }
 
 type accessBody struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
+	User        userBody `json:"user"`
+	AccessToken string   `json:"access_token"`
+	ExpiresIn   int      `json:"expires_in"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -150,13 +156,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setRefreshCookie(w, session.RefreshToken)
 	respondJSON(w, r, http.StatusOK, session)
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	token, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondUnauthorized(w, r, err.Error())
+	token := refreshCredential(r)
+	if token == "" {
+		respondUnauthorized(w, r, msgBadRefresh)
 		return
 	}
 
@@ -179,15 +186,22 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, r, http.StatusOK, accessBody{
+		User: userBody{
+			ID:        user.ID,
+			Email:     user.Email,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+		},
 		AccessToken: access,
 		ExpiresIn:   int(accessTokenTTL.Seconds()),
 	})
 }
 
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
-	token, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondUnauthorized(w, r, err.Error())
+	token := refreshCredential(r)
+	clearRefreshCookie(w)
+	if token == "" {
+		respondUnauthorized(w, r, msgBadRefresh)
 		return
 	}
 
@@ -255,6 +269,40 @@ func (s *Server) logError(r *http.Request, msg string, err error) {
 		slog.String("request_id", RequestIDFrom(r.Context())),
 		slog.Any("err", err),
 	)
+}
+
+func refreshCredential(r *http.Request) string {
+	if token, err := auth.GetBearerToken(r.Header); err == nil {
+		return token
+	}
+	if cookie, err := r.Cookie(refreshCookieName); err == nil {
+		return strings.TrimSpace(cookie.Value)
+	}
+	return ""
+}
+
+func setRefreshCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Value:    token,
+		Path:     refreshCookiePath,
+		MaxAge:   int(refreshTokenTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func clearRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Value:    "",
+		Path:     refreshCookiePath,
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 func respondUnauthorized(w http.ResponseWriter, r *http.Request, msg string) {

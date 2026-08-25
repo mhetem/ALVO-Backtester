@@ -12,46 +12,43 @@ func init() {
 			{Name: "senkou", Kind: ParamInt, Default: 52, Min: 1, Max: MaxPeriod},
 			{Name: "displacement", Kind: ParamInt, Default: 26, Min: 0, Max: MaxPeriod},
 		},
-		Outputs: []string{"tenkan", "kijun", "senkou_a", "senkou_b"},
+		Outputs: []string{"tenkan", "kijun", "senkou_a", "senkou_b", "chikou"},
+		Offsets: func(p Params) []int {
+			ahead := p.Int("displacement")
+			return []int{0, 0, ahead, ahead, -ahead}
+		},
 		New: func(p Params) Indicator {
-			return NewIchimoku(p.Int("tenkan"), p.Int("kijun"), p.Int("senkou"), p.Int("displacement"))
+			return NewIchimoku(p.Int("tenkan"), p.Int("kijun"), p.Int("senkou"))
 		},
 	})
 }
 
 type Ichimoku struct {
-	tenkan       int
-	kijun        int
-	senkou       int
-	displacement int
-	tenkanHigh   *extreme
-	tenkanLow    *extreme
-	kijunHigh    *extreme
-	kijunLow     *extreme
-	senkouHigh   *extreme
-	senkouLow    *extreme
-	leadingA     *ring
-	leadingB     *ring
-	values       [4]float64
+	tenkan     int
+	kijun      int
+	senkou     int
+	tenkanHigh *extreme
+	tenkanLow  *extreme
+	kijunHigh  *extreme
+	kijunLow   *extreme
+	senkouHigh *extreme
+	senkouLow  *extreme
+	values     [5]float64
 }
 
-func NewIchimoku(tenkan, kijun, senkou, displacement int) *Ichimoku {
+func NewIchimoku(tenkan, kijun, senkou int) *Ichimoku {
 	tenkan, kijun, senkou = max(tenkan, 1), max(kijun, 1), max(senkou, 1)
-	displacement = max(displacement, 0)
 
 	return &Ichimoku{
-		tenkan:       tenkan,
-		kijun:        kijun,
-		senkou:       senkou,
-		displacement: displacement,
-		tenkanHigh:   newExtreme(tenkan, true),
-		tenkanLow:    newExtreme(tenkan, false),
-		kijunHigh:    newExtreme(kijun, true),
-		kijunLow:     newExtreme(kijun, false),
-		senkouHigh:   newExtreme(senkou, true),
-		senkouLow:    newExtreme(senkou, false),
-		leadingA:     newRing(displacement + 1),
-		leadingB:     newRing(displacement + 1),
+		tenkan:     tenkan,
+		kijun:      kijun,
+		senkou:     senkou,
+		tenkanHigh: newExtreme(tenkan, true),
+		tenkanLow:  newExtreme(tenkan, false),
+		kijunHigh:  newExtreme(kijun, true),
+		kijunLow:   newExtreme(kijun, false),
+		senkouHigh: newExtreme(senkou, true),
+		senkouLow:  newExtreme(senkou, false),
 	}
 }
 
@@ -63,31 +60,28 @@ func (i *Ichimoku) Update(c Candle) {
 	i.senkouHigh.push(c.High)
 	i.senkouLow.push(c.Low)
 
-	tenkan := (i.tenkanHigh.value() + i.tenkanLow.value()) / 2
-	kijun := (i.kijunHigh.value() + i.kijunLow.value()) / 2
-
-	if i.tenkanHigh.full() && i.kijunHigh.full() {
-		i.leadingA.push((tenkan + kijun) / 2)
-	}
-	if i.senkouHigh.full() {
-		i.leadingB.push((i.senkouHigh.value() + i.senkouLow.value()) / 2)
-	}
-	if !i.leadingA.full() || !i.leadingB.full() {
+	if !i.Ready() {
 		return
 	}
 
+	tenkan := (i.tenkanHigh.value() + i.tenkanLow.value()) / 2
+	kijun := (i.kijunHigh.value() + i.kijunLow.value()) / 2
+
 	i.values[0] = tenkan
 	i.values[1] = kijun
-	i.values[2] = i.leadingA.at(0)
-	i.values[3] = i.leadingB.at(0)
+	i.values[2] = (tenkan + kijun) / 2
+	i.values[3] = (i.senkouHigh.value() + i.senkouLow.value()) / 2
+	i.values[4] = c.Close
 }
 
 func (i *Ichimoku) Values() []float64 { return i.values[:] }
 
-func (i *Ichimoku) Ready() bool { return i.leadingA.full() && i.leadingB.full() }
+func (i *Ichimoku) Ready() bool {
+	return i.tenkanHigh.full() && i.kijunHigh.full() && i.senkouHigh.full()
+}
 
 func (i *Ichimoku) Warmup() int {
-	return max(i.tenkan, i.kijun, i.senkou) - 1 + i.displacement
+	return max(i.tenkan, i.kijun, i.senkou) - 1
 }
 
 func (i *Ichimoku) Reset() {
@@ -97,7 +91,5 @@ func (i *Ichimoku) Reset() {
 	i.kijunLow.reset()
 	i.senkouHigh.reset()
 	i.senkouLow.reset()
-	i.leadingA.reset()
-	i.leadingB.reset()
-	i.values = [4]float64{}
+	i.values = [5]float64{}
 }

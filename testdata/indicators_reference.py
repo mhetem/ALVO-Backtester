@@ -397,7 +397,7 @@ def supertrend(bars, period, mult):
     return line, heading
 
 
-def ichimoku(bars, tenkan_period, kijun_period, senkou_period, displacement):
+def ichimoku(bars, tenkan_period, kijun_period, senkou_period):
     n = len(bars)
 
     def midpoint(period, i):
@@ -408,23 +408,18 @@ def ichimoku(bars, tenkan_period, kijun_period, senkou_period, displacement):
 
     tenkan = [midpoint(tenkan_period, i) for i in range(n)]
     kijun = [midpoint(kijun_period, i) for i in range(n)]
-    raw_a = [
+    senkou_a = [
         None if tenkan[i] is None or kijun[i] is None else (tenkan[i] + kijun[i]) / 2
         for i in range(n)
     ]
-    raw_b = [midpoint(senkou_period, i) for i in range(n)]
-
-    senkou_a = [None] * n
-    senkou_b = [None] * n
-    for i in range(displacement, n):
-        senkou_a[i] = raw_a[i - displacement]
-        senkou_b[i] = raw_b[i - displacement]
+    senkou_b = [midpoint(senkou_period, i) for i in range(n)]
+    chikou = [b["close"] for b in bars]
 
     for i in range(n):
-        if senkou_a[i] is None or senkou_b[i] is None:
-            tenkan[i] = kijun[i] = senkou_a[i] = senkou_b[i] = None
+        if tenkan[i] is None or kijun[i] is None or senkou_b[i] is None:
+            tenkan[i] = kijun[i] = senkou_a[i] = senkou_b[i] = chikou[i] = None
 
-    return tenkan, kijun, senkou_a, senkou_b
+    return tenkan, kijun, senkou_a, senkou_b, chikou
 
 
 def stochastic(bars, k_period, smooth, d_period):
@@ -752,7 +747,7 @@ def main():
     dc_upper, dc_middle, dc_lower = donchian(bars, 20)
     sar_line, sar_direction = psar(bars, 0.02, 0.2)
     st_line, st_direction = supertrend(bars, 10, 3.0)
-    tenkan, kijun, senkou_a, senkou_b = ichimoku(bars, 9, 26, 52, 26)
+    tenkan, kijun, senkou_a, senkou_b, chikou = ichimoku(bars, 9, 26, 52)
     stoch_k, stoch_d = stochastic(bars, 14, 3, 3)
     quick_k, quick_d = stochastic(bars, 5, 1, 3)
     srsi_k, srsi_d = stoch_rsi(close, 14, 14, 3, 3)
@@ -803,6 +798,7 @@ def main():
                 "kijun": kijun,
                 "senkou_a": senkou_a,
                 "senkou_b": senkou_b,
+                "chikou": chikou,
             },
         ),
         case("stoch:14:3:3", {"k": stoch_k, "d": stoch_d}),

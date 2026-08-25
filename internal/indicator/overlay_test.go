@@ -2,6 +2,7 @@ package indicator
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -173,24 +174,45 @@ func TestSuperTrendRidesBelowARisingMarket(t *testing.T) {
 	}
 }
 
-func TestIchimokuLeadsTheCloudByItsDisplacement(t *testing.T) {
+func TestIchimokuComputesInPlaceAndDeclaresItsDisplacement(t *testing.T) {
 	candles := goldenBars(t)
 
 	const displacement = 26
-	_, result := compute(t, "ichimoku:9:26:52:26", candles)
+	instance, result := compute(t, "ichimoku:9:26:52:26", candles)
+
+	if want := []int{0, 0, displacement, displacement, -displacement}; !slices.Equal(instance.Offsets, want) {
+		t.Fatalf("offsets are %v, want %v", instance.Offsets, want)
+	}
 
 	for i := range result.Values[2] {
 		bar := result.Start + i
-		source := bar - displacement
 
-		tenkan := midpoint(candles, source, 9)
-		kijun := midpoint(candles, source, 26)
+		tenkan := midpoint(candles, bar, 9)
+		kijun := midpoint(candles, bar, 26)
 		if want := (tenkan + kijun) / 2; !within(result.Values[2][i], want) {
-			t.Fatalf("bar %d: senkou a is %v, want the %v computed %d bars earlier",
-				bar, result.Values[2][i], want, displacement)
+			t.Fatalf("bar %d: senkou a is %v, want the %v computed at that bar",
+				bar, result.Values[2][i], want)
 		}
-		if want := midpoint(candles, source, 52); !within(result.Values[3][i], want) {
+		if want := midpoint(candles, bar, 52); !within(result.Values[3][i], want) {
 			t.Fatalf("bar %d: senkou b is %v, want %v", bar, result.Values[3][i], want)
+		}
+		if want := candles[bar].Close; !within(result.Values[4][i], want) {
+			t.Fatalf("bar %d: chikou is %v, want the close of %v", bar, result.Values[4][i], want)
+		}
+	}
+}
+
+func TestOnlyDisplacedIndicatorsDeclareAnOffset(t *testing.T) {
+	for _, key := range []string{"ema:9", "bb:20:2", "macd:12:26:9", "psar:0.02:0.2"} {
+		instance, err := Parse(key)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", key, err)
+		}
+		if MaxOffset([]Instance{instance}) != 0 {
+			t.Errorf("%s declares offsets %v, want every output drawn on its own bar", key, instance.Offsets)
+		}
+		if len(instance.Offsets) != len(instance.Spec.Outputs) {
+			t.Errorf("%s has %d outputs but %d offsets", key, len(instance.Spec.Outputs), len(instance.Offsets))
 		}
 	}
 }

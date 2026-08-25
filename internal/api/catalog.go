@@ -25,6 +25,7 @@ type catalogEntryBody struct {
 	Warmup  int         `json:"warmup"`
 	Params  []paramBody `json:"params"`
 	Outputs []string    `json:"outputs"`
+	Offsets []int       `json:"offsets"`
 }
 
 type catalogBody struct {
@@ -74,6 +75,7 @@ func (s *Server) handleIndicators(w http.ResponseWriter, r *http.Request) {
 			Warmup:  instance.Indicator.Warmup(),
 			Params:  make([]paramBody, 0, len(spec.Params)),
 			Outputs: spec.Outputs,
+			Offsets: instance.Offsets,
 		}
 		for _, param := range spec.Params {
 			entry.Params = append(entry.Params, paramBody{

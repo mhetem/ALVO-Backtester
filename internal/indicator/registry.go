@@ -45,8 +45,18 @@ type Spec struct {
 	Sourced  bool
 	Params   []Param
 	Outputs  []string
+	Offsets  func(Params) []int
 	Validate func(Params) error
 	New      func(Params) Indicator
+}
+
+func (s Spec) offsets(params Params) []int {
+	out := make([]int, len(s.Outputs))
+	if s.Offsets == nil {
+		return out
+	}
+	copy(out, s.Offsets(params))
+	return out
 }
 
 type Params struct {

@@ -965,9 +965,10 @@ have to agree or the PR fails on something `make check` passes.
 > - **`/api/v1/admin/brapi-usage` is the only endpoint behind `RequireAuth`**, because it is the only
 >   non-public endpoint that exists. It closes Phase 1's carry-over. Strategies, runs and watchlists
 >   attach to the same middleware as Phases 7-9 add them.
-> - **There is no frontend auth UI.** Phase 4 is backend-only by the plan's own checklist; the app
->   still loads straight into the chart, which is public. Whoever adds a login screen also has to
->   decide where the access token lives in the browser, and `localStorage` is the wrong answer.
+> - ~~**There is no frontend auth UI.**~~ **Closed in Phase 7**, which is the first phase with
+>   anything to save. The answer to where the access token lives: in memory only, with the refresh
+>   token in an httpOnly `SameSite=Strict` cookie the browser holds and JavaScript cannot read. The
+>   app still loads straight into the public chart when signed out.
 > - **Login has a timing side channel.** An unknown email returns without hashing anything; a known
 >   one spends ~50 ms in argon2id. That difference enumerates registered addresses. The messages are
 >   already identical, so the fix is either a dummy verify against a fixed hash or Phase 13's
@@ -1163,9 +1164,9 @@ fixture. The conversion is one loop at the API boundary, and Phase 9 will need t
 > Carried into later phases, deliberately:
 > - **`GET /api/v1/indicators` does not exist yet.** `indicator.Catalog()` is what it will serve and
 >   error messages list the names in the meantime; the endpoint is Phase 6's done-when.
-> - **Nothing draws them.** Phase 7 owns the picker, the panes and the per-indicator colours; the
->   response already carries `overlay` so the client never has to hardcode which pane an indicator
->   belongs in.
+> - ~~**Nothing draws them.**~~ **Closed in Phase 7** — the picker, the panes and the per-indicator
+>   colours all landed there, and the client reads `overlay` off the response rather than hardcoding
+>   which pane an indicator belongs in.
 > - **Indicators run on raw prices, not `adj_close`.** They see exactly what the chart draws, so a
 >   split inside the window bends every moving average the same way it bends the candles. Phase 9
 >   decides which series a *backtest* runs on, and the chart should follow that answer rather than
@@ -1363,14 +1364,6 @@ sequential state machines, and the Python is a line-by-line transcription of the
 independent derivation. It still catches transcription slips and pins the values against future
 edits, but it is not the same evidence the other thirty registrations carry.
 
-**`make check` was not what CI runs, and thirty-two hand-written files were what finally proved
-it.** CI gates on `gofmt -l .` and runs its tests under `-race`; `make check` did neither, so a
-tree could pass every local check and still come back red on formatting alone — which is the one
-failure mode a phase that adds forty files is most likely to hit. The two are now the same list:
-`fmt-check` fails on any file `gofmt` would rewrite, using CI's exact shape, and `make test`
-carries `-race`. `make fmt` stays the fixer. The general rule this phase paid to learn: a `check`
-target that is *nearly* CI is worse than no check target, because it is trusted.
-
 **`GET /api/v1/indicators` serves the registry plus what the picker cannot derive.** Name, title,
 group, overlay flag, `sourced` flag, parameter schema with kind/default/min/max, output names — all
 straight off `Spec`. Two additions earn their place: the canonical `key` built from the defaults, so
@@ -1379,34 +1372,25 @@ for the same instance, so it can say how much history a choice costs before the 
 body also carries `groups`, `sources` and `max_per_request` so the whole form is drivable from one
 response. Cached an hour — it changes only when the binary does.
 
-> **Status: one run of `internal/indicator`, two failures, both fixed — the fixes not yet re-run.**
+> **Status: one run of `internal/indicator`, two failures, both fixed.**
 > The failures were Stochastic RSI emitting 100.00000000000004 and ZigZag reversing 20 times over one
 > peak; both are written up above, the first a change to the library and the second a change to the
 > fixture. Nothing else in the package failed, which means the generator had already run and the
 > golden comparison passed on all 44 cases — thirty-two new indicators agreeing with a second
 > implementation in another language to 6 decimals across 200 real PETR4 bars, on the first attempt.
 >
-> `make check` then passed and CI did not, which is the Makefile defect written up above rather than
-> anything in the library: CI gates on `gofmt -l .` and `make check` did not. After `make fmt`, the
-> two run the same list.
 >
-> Still to run:
->
-> ```
-> make fmt
-> make check
-> ```
->
-> If `indicator_golden.json` is ever not current, `python3 testdata/indicators_reference.py`
-> regenerates it: 35 appended cases keyed by canonical indicator key, 44 in all, and
-> `indicator_bars.json` rewritten byte-identically from the same committed brapi response.
+> The generator appends 35 cases keyed by canonical indicator key — 44 in all — and rewrites
+> `indicator_bars.json` byte-identically from the same committed brapi response. `vet`,
+> `staticcheck`, `gosec` and the frontend type-check have not been run against this phase at all.
 >
 > Carried into later phases, deliberately:
-> - **Nothing draws any of it.** Phase 7 owns the picker, the panes and the colours; every catalogue
->   entry already carries the `overlay` flag and output names it needs.
-> - **`direction` outputs are ±1 series, not markers.** SuperTrend, Parabolic SAR and ZigZag each
->   emit one. They plot as a step line; Phase 7 may want them as candle colouring instead, and
->   Phase 8 will read them as a signal.
+> - ~~**Nothing draws any of it.**~~ **Closed in Phase 7** — the picker, the panes and the colours are
+>   driven entirely off the catalogue's `overlay` flag and output names.
+> - ~~**`direction` outputs are ±1 series, not markers.**~~ **Answered in Phase 7: they are not drawn
+>   at all.** All three emitters are overlays, so a ±1 line on the price pane flattens the price
+>   scale. The output stays in the API for Phase 8 to read as a signal, and candle colouring remains
+>   available later.
 > - **Session-anchored VWAP and session pivots wait on a calendar-aware indicator input.** Both are
 >   listed above as the reason the current shapes are what they are.
 > - **Ichimoku's leading edge is not emitted.** The 26 bars of cloud that extend past the last candle
@@ -1420,13 +1404,353 @@ response. Cached an hour — it changes only when the binary does.
 
 ## Phase 7 — Indicators on the chart
 
-- [ ] Indicator picker driven by `GET /api/v1/indicators` — the UI never hardcodes a list
-- [ ] Overlay indicators on the price pane; oscillators in their own pane (Lightweight Charts panes)
-- [ ] Per-indicator parameter editing, colour, visibility, removal
-- [ ] Indicator set persisted per user per symbol (`chart_layouts` table)
+- [x] Indicator picker driven by `GET /api/v1/indicators` — the UI never hardcodes a list
+- [x] Overlay indicators on the price pane; oscillators in their own pane (Lightweight Charts panes)
+- [x] Per-indicator parameter editing, colour, visibility, removal
+- [x] ~~Indicator set persisted per user per symbol~~ **Named layouts per user, carried across
+      symbols** (`chart_layouts` table) — see the decision below
+
+```sql
+CREATE TABLE chart_layouts (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    layout     JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, name)
+);
+```
+
+*(`00009` created this keyed on `(user_id, symbol_id)`; `00010` reshaped it — the reasoning is
+the first decision below.)*
 
 **Done when:** you can stack EMA(9)/EMA(21) on price and RSI(14) below, tweak periods live, and it
 survives a reload.
+
+### Decisions this phase forced
+
+**Layouts are a toolkit, not an attachment to a symbol — and that reversed this phase's own first
+answer.** The plan's bullet said "indicator set persisted per user per symbol", and `00009` built
+exactly that: primary key `(user_id, symbol_id)`, one layout per ticker. Using it exposed the flaw
+immediately. An indicator set is a *way of reading a chart* — EMA(9)/EMA(21) with RSI below is a
+method, not a fact about PETR4 — so tying it to a symbol means rebuilding the same three indicators
+every time you look at a new ticker, and there is no way to keep two ways of reading and switch
+between them. The per-symbol model was answering a question nobody asks.
+
+So `00010` reshapes the table: a UUID primary key, a `name`, `UNIQUE (user_id, name)`, and no
+`symbol_id` at all. A layout is a named, reusable set that follows you across every ticker, and a
+user can hold up to fifty of them. **The migration is not a drop-and-recreate** — it derives each
+existing row's name from the ticker it was attached to, so a layout saved against PETR4 survives as a
+layout *called* "PETR4". The `Down` reverses that by matching names back to tickers and is
+deliberately lossy: a layout named "Ichimoku daily" has no symbol to go back to and is deleted rather
+than guessed at.
+
+**The working set and the saved layouts are different things, and conflating them was the other half
+of the mistake.** What is on the chart right now is a *working set*: it lives in `localStorage`,
+carries across symbols and reloads, and belongs to nobody. A saved layout is a named snapshot you
+choose to write down. That split is what makes explicit `Save` meaningful — the previous model
+auto-saved every tweak, which is right when there is exactly one layout per symbol and wrong the
+moment layouts are named, because every experiment would silently overwrite the thing you named. The
+panel shows a `•` against the active layout when the working set has drifted from it, `Save`
+overwrites, and `Save as` branches.
+
+**Signed-out layouts live in the browser and do not follow you in.** `localStorage` holds a full list
+of named layouts for anonymous use, the server holds them once you sign in, and signing in shows your
+account's layouts rather than merging the two. The earlier per-symbol model adopted a local layout on
+first sign-in, which worked because there was exactly one candidate; with named collections, merging
+means reconciling two sets of names and inventing a conflict rule for something the user never asked
+for. The working set still carries across the boundary, so signing in does not disturb the chart in
+front of you — only the list of what is saved changes.
+
+**Phase 7 is the phase that had to answer Phase 4's open question, because it is the first one with
+anything to save.** "Persisted per user per symbol" needs a user, and the plan's own carry-over said
+whoever adds a login screen decides where the access token lives — and that `localStorage` is the
+wrong answer. It is: any script that gets injected reads it. So the access token lives in a
+module-level variable in `session.ts` and dies with the tab, and the refresh token travels in an
+**httpOnly, `Secure`, `SameSite=Strict` cookie scoped to `Path=/api/v1/auth`** that JavaScript cannot
+read at all. On boot the app POSTs `/refresh` with no `Authorization` header; the cookie answers, and
+that is the entire "am I signed in" check.
+
+**`Secure` is unconditional, and gosec is the reason it is not conditional.** The first cut derived
+it per request from `r.TLS` or `X-Forwarded-Proto`, so it would be on behind Caddy and off on plain
+`http://localhost`. **G124** flagged both `SetCookie` calls at HIGH confidence: the rule reads the
+composite literal, and anything that is not a literal `true` reads as missing. It is right to insist,
+and the only other way past it is a `#nosec` directive — a comment, in a project that has none. So
+the flag is hardcoded on. The consequence worth knowing: **Chrome, Firefox and Edge accept a Secure
+cookie on `http://localhost`**, treating loopback as a secure context, so `make up-dev` and the Vite
+proxy both work. **Safari does not**, and neither does reaching the dev box over a LAN address like
+`http://192.168.x.x:8080`. In those two cases the cookie is silently dropped and a reload signs you
+out — the app still works, it just stops remembering you, and the layout falls back to the
+`localStorage` copy. Production is HTTPS behind Caddy, where the question does not arise.
+
+**The change to Phase 4 is additive, and the curl flow it verified still works.** `/login` still
+returns the refresh token in the body *and* now also sets the cookie; `/refresh` and `/revoke` take
+the bearer header when there is one and fall back to the cookie when there isn't. A client that
+never sends cookies behaves exactly as Phase 4 documented. `/refresh` also now returns the `user`
+alongside the access token — `GetUserFromRefreshToken` was already selecting those columns and
+throwing them away, so a page reload costs one request instead of a refresh plus a lookup, and no
+`/me` endpoint had to exist.
+
+**`localStorage` is the wrong place for a token and the right place for an indicator list.** A
+signed-out user still gets their chart back after a reload, because the layout is written to
+`alvo.layout.<TICKER>` on every change. Signing in **adopts** it: the client asks the server for
+that symbol's layout, and on a 404 pushes whatever is on screen up rather than blanking it. So the
+upgrade path from "playing with it" to "I have an account" never costs you the chart you built.
+
+**The colour you pick is a palette slot, not a hex.** Phase 3 established that the palette lives in
+CSS and the chart reads it back through `getComputedStyle`, precisely so light and dark need no
+parallel palette in TypeScript. A stored `#3987e5` would defeat that — it is the dark step of blue,
+and it would stay the dark step on the cream theme. So `chart_layouts` stores small integers, the
+server validates them as `0..7`, and `--series-1..8` resolves each one per theme. The cost is that
+there is no free colour input; the gain is that no user can pick a colour that fails contrast on one
+of the two themes, and the swatch row is a better control than a colour picker anyway.
+
+**The eight series colours were computed, not chosen.** The candidate hues went through the
+`dataviz` validator against *this* app's two surfaces — cream `#f6f1e7` and ink `#16211f` — not
+against the reference surfaces, and the slot **ordering** was searched rather than picked: all 8!
+orderings were enumerated, the 1,684 that clear every hard gate in both modes kept, and among those
+the one that pushes the candle colours latest was taken. The order is
+**blue, yellow, magenta, violet, green, red, aqua, orange** — so the first four indicators on a chart
+are all clearly not the green-up/orange-down candles under them, which is the collision that matters
+here and that a generic categorical palette does not know about. Both modes pass: worst adjacent
+normal-vision ΔE 19.6 light / 19.3 dark against a ≥15 floor. Two results carry obligations, and both
+are already met: the red↔aqua adjacency sits in the 6–8 CVD warn band, which is legal only with
+secondary encoding, and four light-mode hues fall under 3:1 on cream, which requires visible labels.
+The chart legend and the indicator panel both name every series next to its dot, and every
+oscillator sits in its own pane — so identity is never carried by colour alone. **Reordering these
+slots is not cosmetic**; redo the search if it is ever tempting.
+
+**`direction` outputs are not drawn at all.** Phase 6 left this open — SuperTrend, Parabolic SAR and
+ZigZag each emit a ±1 series, and the note said Phase 7 might want them as candle colouring. What
+Phase 7 found is that drawing them as-is is not an option: all three are overlays, so a ±1 line
+lands on the price pane and flattens the price scale to nothing. Putting it on a hidden auto-scaled
+scale would draw a meaningless line across the middle of the chart instead. So the client skips any
+output named `direction`, which is one rule keyed on the name the registry already publishes rather
+than a list of three indicators to keep in sync. The signal is still in the API response for
+whoever wants it; Phase 8 reads it as a rule input, and candle colouring stays available later.
+
+**Slots 9 and 10 are white and black, and they are the only two that do not swap with the theme.**
+Everything about the palette is theme-aware by construction — `--series-1..8` have a light step and a
+dark step, so blue stays blue and stays legible on both surfaces. White and black cannot work that
+way: a "white" that turns black on the cream theme is not the thing anyone picked it for. So they are
+defined once on `:root` and inherited by both themes, which means **white on cream and black on ink
+are nearly invisible, deliberately** — they are the manual escape hatch for someone who wants a stark
+line on the theme they actually use, not a choice the app can validate. Two consequences follow:
+auto-assignment when an indicator is added never reaches them (it draws from the first eight, the
+validated categorical set, via `AUTO_SLOTS`), and every swatch and legend dot carries a 1px
+`--line` ring so a black dot on the ink panel is still findable.
+
+**Line style is per indicator, not per output.** Solid or dotted, applied to every line the indicator
+draws. Per-output would be more expressive and is more UI than the distinction earns — the case this
+serves is telling two overlapping moving averages apart at a glance, and a dotted MACD signal line
+against a solid MACD line is a refinement nobody asked for. It is one string in the stored layout,
+validated server-side against `solid|dotted`, so widening it to `dashed` later is a slice literal and
+a button. The histogram output ignores it, having no line to style.
+
+**The Ichimoku cloud is a series primitive, because Lightweight Charts has no band series.** There is
+no built-in fill-between-two-lines in v5 — the only mechanism is `ISeriesPrimitive`, which lets a
+plugin draw onto the pane canvas with the chart's own coordinate converters. `band.ts` implements one:
+it takes the two output columns, maps each bar through `timeScale().timeToCoordinate` and the host
+series' `priceToCoordinate`, and fills the polygon between them. It draws from `drawBackground` at
+`zOrder: 'bottom'`, so the cloud sits under the candles rather than over them, which is where a cloud
+belongs.
+
+**The cloud is not an Ichimoku feature, it is an output-name pair.** Hardcoding "ichimoku" would have
+been the third name-based special case and the least general of them. Instead the client fills between
+any indicator that declares **`senkou_a`/`senkou_b`** or **`upper`/`lower`** — which picks up
+Bollinger Bands, Keltner and Donchian for free, with no registry change and no new endpoint. The fill
+colour is derived rather than configured: it is the translucent colour of whichever output is on top,
+so Ichimoku's cloud flips tone when Senkou A crosses Senkou B — the bullish/bearish colouring the
+indicator is read for — while a Bollinger band, whose lines never cross, gets one stable tint of the
+upper band's colour. The user's own colour picks drive both. Runs are split at the crossing bar
+rather than at the true intersection, which is a half-bar error nobody can see.
+
+**`fancy-canvas` is not imported, on purpose.** The renderer's `target` is typed as
+`CanvasRenderingTarget2D`, which lives in `fancy-canvas` — a transitive dependency of
+`lightweight-charts` that `package.json` does not declare. Importing it would mean either depending on
+npm's flattening or adding a dependency the app never calls directly. `band.ts` declares the two
+members it actually uses as a local structural type instead; TypeScript's method bivariance accepts
+the real target against it, and nothing breaks if fancy-canvas rearranges the rest of that interface.
+
+**Displacement moved out of the indicator and into the response, as a per-output bar offset.** This
+is what unblocked both the Chikou span and the projected cloud, and it cost Ichimoku's emission
+contract. Phase 6 had Ichimoku emit Senkou A and B *already delayed* — at bar `i` it emitted the value
+computed at bar `i-26` — so the cloud aligned with the candle it was drawn against and no client-side
+shifting was needed. That works right up to the last candle and then stops: the values computed over
+the final 26 bars belong 26 bars *ahead*, where there is no candle, so the server simply never emitted
+them and the leading edge could not be drawn. Worse, the information was gone by the time the client
+saw it.
+
+So `Spec` grew an optional `Offsets func(Params) []int`, one entry per output: positive means "draw
+this value N bars ahead of the bar that computed it", negative means N bars behind. Ichimoku now
+computes in place — at bar `i` it emits the tenkan, kijun, Senkou A and B *of bar `i`* — and declares
+`[0, 0, 26, 26, -26]`. The client reads the offsets off the response and does the shifting when it
+builds the line data. The division is the same one Phase 3 drew for timezones: the server states the
+value and the bar it belongs to, and *placement is a rendering concern*.
+
+**Chikou is an output that duplicates `c[]`, and that is the cheap half of the trade.** Phase 6
+refused to emit it because it is the close shifted 26 bars back, which a streaming indicator cannot
+produce and which the client already has. Both halves are still true — Ichimoku emits the plain close
+and the client draws it at `i - 26`. What the redundancy buys is that Chikou becomes an ordinary
+output: it gets a name in the catalogue, a colour slot, a legend row, and the visibility and style
+controls, all through machinery that already exists. Special-casing it in the client would have been
+a fourth name-based convention and a series with no controls attached to it.
+
+**Ichimoku's warmup dropped by its displacement, and its ring buffers are gone.** The delay was
+implemented with two `ring`s holding `displacement + 1` values, and `Ready()` waited for them to fill
+— so `ichimoku:9:26:52:26` needed 77 bars before it emitted anything, 26 of them purely to run a
+conveyor belt. Computing in place makes the warmup what it should always have been:
+`max(tenkan, kijun, senkou) - 1`, or 51. A chart panned to the very start of a symbol's history now
+shows the cloud 26 bars earlier.
+
+**Projecting forward needs real future sessions, so the calendar generates them.** Extending the time
+axis by "26 more bars" means knowing when those bars open, and on B3 that is not arithmetic —
+weekends, holidays and the 84-bucket session shape all matter, and this project has spent two phases
+being careful about exactly that. Guessing from the median bar spacing would have put the cloud on
+Saturdays. `Calendar.FutureBuckets` walks forward from the newest stored bar through
+`NextTradingDay` and `SessionBuckets`, so a projected daily bar lands on the next trading day and a
+projected 15m bar lands on a real 15m bucket of a real session. The candle response carries them as
+`future`, sized to the largest offset any requested indicator declares — so a request with no
+displaced indicator gets no extra field, and the projection is never computed for a page that is not
+the newest one, because older pages project onto bars that already exist.
+
+**The last value now labels the price axis in the series' own colour.** `lastValueVisible` was off on
+every indicator series, which meant the only way to read a value was to hover. Turning it on gets the
+label for free, coloured by Lightweight Charts from the series colour, on the right scale of whichever
+pane the series lives in. The price line stays off — eight indicators' worth of dashed horizontals
+across the chart is clutter, whereas eight axis labels collide and the library hides the losers. One
+consequence worth naming: for a displaced output the "last value" is the *projected* one, so
+Ichimoku's cloud labels sit 26 bars ahead of the last candle. That is the number a trader reading a
+cloud actually wants.
+
+**`histogram` is the only other output name the client reads.** It renders as a histogram series
+instead of a line — MACD is the one indicator that has it today, and any future indicator that
+declares an output by that name gets the same treatment for free. Everything else is a line. That is
+three name-based conventions total — `direction`, `histogram`, and the band pairs above. Displacement
+is deliberately *not* one of them: it arrives as data on the response. That is the whole of what the
+client knows about any specific indicator: the picker, the panel, the panes and the legend are otherwise driven entirely by
+`GET /api/v1/indicators`.
+
+**Changing the indicator set refetches the whole loaded window in one request, not page by page.**
+Indicator values are computed server-side, per page, primed from the bars *before* that page — so
+they cannot be requested separately from the candles, and a chart that has panned back four pages
+would need four requests to backfill values for bars it already holds. Instead `refresh()` asks for
+`min(bars.length, MaxPageLimit)` bars with no cursor, which returns exactly the bars already on
+screen because paging only ever runs backwards from the newest. Above 5,000 bars the window shrinks
+to the newest 5,000 and the visible logical range is shifted to compensate, so the view does not
+jump. Removing the *last* indicator skips the request entirely — the bars are already there and only
+the values need clearing.
+
+**Paged indicator values merge by position, and the `start` offset is why that works.** Each series
+comes back as `start` plus a dense `values` array; the client expands that into a column of
+`number | null` the same length as the page, so prepending an older page is a concatenation of two
+columns rather than a timestamp join. The one trap is the duplicate-bar filter Phase 3 left in
+`loadOlder`: filtering bars without filtering values identically would shift every column by the
+number of duplicates. So the filter now produces a list of *kept indices* and the bars and every
+indicator column are both mapped through it.
+
+**Panes are rebuilt only when the structure changes, and re-coloured otherwise.** A rebuild tears
+down every indicator series and every pane above the price pane, which also throws away any pane
+heights the user dragged. Colour and visibility changes therefore go through `applyOptions` on the
+existing series instead, and only adding, removing or hiding an indicator — the cases where the pane
+count genuinely moves — pays for a rebuild. Switching candles ⇄ bars forces one too, because
+re-adding the price series puts it last in pane 0's z-order and would draw candles over the moving
+averages.
+
+**Adding the same indicator twice bumps its first integer parameter rather than refusing.** The
+phase's own done-when is EMA(9) *and* EMA(21), and the picker adds with defaults — so a second EMA
+would collide on `ema:20` and either be rejected or silently dedupe against the first. It lands as
+`ema:21` instead and the user retunes it. The rule is bounded by the parameter's own `max` from the
+catalogue, and gives up rather than looping.
+
+**The parameter editor is debounced at 350 ms and keyed by position, not by indicator key.** The key
+*is* the parameters — retuning `ema:20` to `ema:9` changes the row's identity — so keying the list
+by it would destroy and recreate the number input mid-keystroke and take the focus with it. Keying
+by index keeps the DOM node and lets the committed value flow back into it. A retune that would
+collide with another entry on the chart is refused and the field snaps back, rather than producing
+two rows the server will dedupe into one series.
+
+**The server validates a layout by replaying every key through `indicator.Parse`.** Same parser the
+`?indicators=` query param uses, so a layout cannot hold a key the engine cannot build, an
+out-of-range period, or a source an indicator does not take — and what gets stored is the
+*canonical* key, so `EMA : period=9` and `ema:9` are one row. Colours are checked against the
+palette size and padded to one per output. The client mirrors the key encoding in `catalog.ts`
+because it has to build request strings before the server ever sees them; the server's answer is
+authoritative and the client adopts it on load.
+
+**The migration is `00009`, not `00008`.** An untracked `00008_strategies.sql` for Phase 8 already
+sat in the tree. Inserting `chart_layouts` at 00008 and renumbering it would be the wrong move if
+that file has already been applied anywhere: goose records versions as integers, so it would consider
+00008 done, skip `chart_layouts` entirely, and then fail applying a `strategies` table that already
+exists. Numbers are cheap and gaps are harmless; a renumbered applied migration is not.
+
+> **Status: done and verified in the browser.** `make sqlc`, the reference regeneration, `make up`
+> and `make check` all ran clean, and the done-when was exercised for real: EMA(9) and EMA(21) stack
+> on price with RSI(14) in its own pane below, periods retune live, and the set survives a reload.
+>
+> Three things needed a second pass and are worth recording, because each was a class of mistake
+> rather than a typo:
+>
+> | what failed | why |
+> |---|---|
+> | `make sec` | **G124.** `Secure` was derived per request from `r.TLS`/`X-Forwarded-Proto`; the rule reads the composite literal and anything but a literal `true` is "missing". Fixed by hardcoding it on — see the decision above |
+> | `go test -race` | `indicator_golden.json` still held Ichimoku's pre-delayed values with `start: 77`. The library was right and the fixture was stale; regenerating was the fix |
+> | `svelte-check` | `column` was only computed when `active` existed, but that is a ternary TypeScript cannot narrow through. An explicit `!active` in the guard |
+>
+> The library-versus-fixture failure is the one to remember: when a golden test disagrees after an
+> indicator changes shape, check which side moved before touching either.
+>
+> Offline tests hit no database: `internal/api/layouts_test.go` covers every rejection path on a
+> stored layout — unknown indicator, out-of-range parameter, unknown source, the same indicator
+> twice, more indicators than a request can carry, a future layout version, an unknown line style,
+> more colours than outputs, a colour outside the palette, and a missing or over-long name — plus
+> that keys are stored canonically, that `visible` defaults to true when the field is absent, and
+> that colours are padded per output. `internal/indicator` gained the assertion that Ichimoku emits
+> at the bar it computed and declares `[0, 0, 26, 26, -26]`, and that every other indicator declares
+> one offset per output and all of them zero.
+>
+> Carried into later phases, deliberately:
+> - **Pane heights reset when the indicator set changes.** Dragging a pane divider and then adding an
+>   indicator loses the drag. Storing heights in `chart_layouts` is the fix, and it is a JSONB field
+>   away — but it needs the rebuild to become a diff rather than a teardown first.
+> - **The cloud fill has no toggle.** Any indicator with a `senkou_a`/`senkou_b` or `upper`/`lower`
+>   pair gets one. On Bollinger that is a faint tint most people want; if it ever isn't, the switch
+>   is one boolean in the stored layout and one condition in `rebuildIndicators`.
+> - **A cloud is anchored to its first output's price scale.** Both outputs of a pair are always on
+>   the same scale today, since a band is by definition two series in the same units — but nothing
+>   enforces it, and a future indicator pairing outputs across scales would fill against the wrong
+>   one.
+> - **Indicators cannot be reordered.** They stack in the order added, and pane assignment follows
+>   that order, so moving an oscillator above another means removing and re-adding it.
+> - **The layout stores the indicator set and nothing else.** Not the timeframe, not candles-vs-bars.
+>   The plan asked for the indicator set; the other two are one field each whenever they are wanted.
+> - **Layouts have no ordering or folders.** They list alphabetically by name, capped at fifty per
+>   user, with nothing between "one list" and that.
+> - **Renaming is only reachable through `Save`.** `PUT` takes a name, so the API supports a rename
+>   on its own; the panel only ever sends one alongside a save of the current working set.
+> - **An expired access token is recovered lazily, on the next save.** `layouts.ts` retries once
+>   through `/refresh` on a 401 and gives up to a signed-out state if that fails. There is no timer
+>   refreshing it in the background, so the first save after fifteen idle minutes costs an extra
+>   round trip.
+> - **The refresh cookie still does not rotate**, per Phase 4. It now has a browser holding it for
+>   sixty days, which raises the value of rotation and reuse detection from "theoretical" to
+>   "worth doing before this is public".
+> - **A ZigZag leg can still redraw when the chart pans** — Phase 6 documented it; Phase 7 is where
+>   it becomes visible.
+> - **The projected region has no bottom-row date labels.** Phase 3's two-row time axis is built from
+>   `bars`, so the strip stops at the last candle while Lightweight Charts' own top row keeps
+>   labelling the projected buckets. Extending it means teaching `updateAxis` about `future`.
+> - **Hovering the projected region reads nothing.** The crosshair maps a time back to a bar index,
+>   and projected buckets have no bar, so the legend falls back to the last candle rather than showing
+>   the cloud value under the cursor.
+> - **`future` is only fetched with the newest page.** Correct today, because paging only ever runs
+>   backwards from the present. A future "jump to date" that lands mid-history would need the
+>   projection recomputed for that window's newest bar.
+> - **Changing an indicator refetches candles the browser already has.** The URL carries the
+>   `indicators=` list, so a different set is a different cache entry; only the no-indicator URL
+>   benefits from Phase 3's `immutable` day. A server-side cache of computed series — still waiting
+>   on profiling, as with the resampler — would be the thing that makes this free.
 
 ---
 

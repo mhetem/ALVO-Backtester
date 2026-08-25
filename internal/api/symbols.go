@@ -1,9 +1,12 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	database "github.com/mhetem/ALVO-Backtester/internal/db"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
@@ -86,6 +89,27 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondCached(w, r, body, cacheSymbols)
+}
+
+func (s *Server) findSymbol(w http.ResponseWriter, r *http.Request, ticker string) (database.Symbol, bool) {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
+
+	row, err := s.queries.GetSymbolByTicker(r.Context(), ticker)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			respondError(w, r, http.StatusNotFound, "no such symbol: "+ticker)
+			return database.Symbol{}, false
+		}
+		s.log.ErrorContext(r.Context(), "looking up symbol",
+			slog.String("request_id", RequestIDFrom(r.Context())),
+			slog.String("ticker", ticker),
+			slog.Any("err", err),
+		)
+		respondError(w, r, http.StatusInternalServerError, "internal server error")
+		return database.Symbol{}, false
+	}
+
+	return row, true
 }
 
 func displayName(row database.Symbol) string {

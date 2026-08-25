@@ -1,7 +1,14 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import Chart from './lib/Chart.svelte';
+  import IndicatorPanel from './lib/IndicatorPanel.svelte';
+  import IndicatorPicker from './lib/IndicatorPicker.svelte';
+  import SignIn from './lib/SignIn.svelte';
   import SymbolSearch from './lib/SymbolSearch.svelte';
   import {
+    describe,
+    HttpError,
     searchSymbols,
     TIMEFRAMES,
     type Bar,
@@ -9,7 +16,29 @@
     type SymbolRow,
     type Timeframe,
   } from './lib/api';
+  import { fetchCatalog, type Catalog, type CatalogEntry } from './lib/catalog';
   import { formatChange, formatPrice, formatStamp, formatVolume } from './lib/format';
+  import {
+    addIndicator,
+    fromStored,
+    toStored,
+    type ActiveIndicator,
+  } from './lib/indicators';
+  import {
+    createLayout,
+    deleteLayout,
+    fetchLayouts,
+    readLocalLayouts,
+    readWorking,
+    sameSet,
+    saveLocalLayout,
+    updateLayout,
+    writeLocalLayouts,
+    writeWorking,
+    type SavedLayout,
+  } from './lib/layouts';
+  import { logout, resume, type User } from './lib/session';
+  import { seriesPalette } from './lib/theme';
 
   let symbol = $state('PETR4');
   let name = $state('');
@@ -19,8 +48,43 @@
   let latest = $state<Bar | null>(null);
   let count = $state(0);
 
+  let catalog = $state<Catalog | null>(null);
+  let catalogError = $state<string | null>(null);
+  let indicators = $state<ActiveIndicator[]>([]);
+  let colors = $state<string[]>(seriesPalette());
+
+  let user = $state<User | null>(null);
+  let layouts = $state<SavedLayout[]>([]);
+  let activeLayoutId = $state<string | null>(null);
+  let layoutError = $state<string | null>(null);
+  let layoutBusy = $state(false);
+  let addError = $state<string | null>(null);
+
+  let panelOpen = $state(false);
+  let pickerOpen = $state(false);
+  let signInOpen = $state(false);
+
+  let layoutsFor = '';
+  let restored = false;
+
   const shown = $derived(hovered ?? latest);
   const intraday = $derived(timeframe !== '1d');
+  const ceiling = $derived(catalog?.max_per_request ?? 8);
+  const full = $derived(indicators.length >= ceiling);
+
+  const activeLayout = $derived(layouts.find((layout) => layout.id === activeLayoutId) ?? null);
+
+  const dirty = $derived(
+    activeLayout === null
+      ? indicators.length > 0
+      : !sameSet(toStored(indicators), activeLayout.indicators),
+  );
+
+  const note = $derived(
+    user
+      ? `${layouts.length} layout${layouts.length === 1 ? '' : 's'} saved to ${user.email}`
+      : `${layouts.length} layout${layouts.length === 1 ? '' : 's'} saved in this browser`,
+  );
 
   function select(row: SymbolRow) {
     symbol = row.ticker;
@@ -37,9 +101,198 @@
     }
   }
 
+  function applyIndicators(next: ActiveIndicator[]) {
+    indicators = next;
+    writeWorking(toStored(next), activeLayoutId);
+  }
+
+  function selectLayout(id: string | null) {
+    layoutError = null;
+    activeLayoutId = id;
+
+    const chosen = layouts.find((layout) => layout.id === id);
+    const next = chosen && catalog ? fromStored(chosen.indicators, catalog) : indicators;
+
+    indicators = chosen ? next : indicators;
+    writeWorking(toStored(indicators), id);
+  }
+
+  async function persist(name: string, id: string | null) {
+    const stored = toStored(indicators);
+
+    if (!user) {
+      const next = saveLocalLayout(layouts, id, name, stored);
+      writeLocalLayouts(next);
+      layouts = next;
+      return next.find((layout) => layout.name === name)?.id ?? id;
+    }
+
+    const saved = id ? await updateLayout(id, name, stored) : await createLayout(name, stored);
+    layouts = [...layouts.filter((layout) => layout.id !== saved.id), saved].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    return saved.id;
+  }
+
+  async function saveLayout(name: string, id: string | null) {
+    if (layoutBusy) {
+      return;
+    }
+
+    layoutBusy = true;
+    layoutError = null;
+
+    try {
+      activeLayoutId = (await persist(name, id)) ?? null;
+      writeWorking(toStored(indicators), activeLayoutId);
+    } catch (cause) {
+      if (cause instanceof HttpError && cause.status === 401) {
+        user = null;
+      }
+      layoutError = describe(cause);
+    } finally {
+      layoutBusy = false;
+    }
+  }
+
+  async function removeLayout() {
+    const id = activeLayoutId;
+    if (!id || layoutBusy) {
+      return;
+    }
+
+    layoutBusy = true;
+    layoutError = null;
+
+    try {
+      if (user) {
+        await deleteLayout(id);
+      }
+      layouts = layouts.filter((layout) => layout.id !== id);
+      if (!user) {
+        writeLocalLayouts(layouts);
+      }
+      activeLayoutId = null;
+      writeWorking(toStored(indicators), null);
+    } catch (cause) {
+      if (cause instanceof HttpError && cause.status === 401) {
+        user = null;
+      }
+      layoutError = describe(cause);
+    } finally {
+      layoutBusy = false;
+    }
+  }
+
+  async function loadLayouts(who: User | null) {
+    if (!who) {
+      layouts = readLocalLayouts();
+      return;
+    }
+
+    try {
+      layouts = await fetchLayouts();
+      layoutError = null;
+    } catch (cause) {
+      if (cause instanceof HttpError && cause.status === 401) {
+        user = null;
+      }
+      layouts = [];
+      layoutError = describe(cause);
+    }
+  }
+
+  function openPicker() {
+    addError = null;
+    pickerOpen = true;
+  }
+
+  function add(entry: CatalogEntry) {
+    const created = addIndicator(entry, indicators);
+    if (!created) {
+      addError = `Every ${entry.title} this chart can hold is already on it.`;
+      return;
+    }
+
+    addError = null;
+    pickerOpen = false;
+    panelOpen = true;
+    applyIndicators([...indicators, created]);
+  }
+
+  function forgetActiveLayout() {
+    activeLayoutId = null;
+    layoutError = null;
+    writeWorking(toStored(indicators), null);
+  }
+
+  function signedIn(who: User) {
+    user = who;
+    signInOpen = false;
+    forgetActiveLayout();
+  }
+
+  async function signOut() {
+    await logout();
+    user = null;
+    forgetActiveLayout();
+  }
+
+  onMount(() => {
+    void (async () => {
+      try {
+        catalog = await fetchCatalog();
+      } catch (cause) {
+        catalogError = describe(cause);
+      }
+    })();
+
+    void (async () => {
+      user = await resume();
+    })();
+  });
+
+  $effect(() => {
+    const known = catalog;
+    if (!known || restored) {
+      return;
+    }
+
+    restored = true;
+    const working = readWorking();
+    indicators = fromStored(working.indicators, known);
+    activeLayoutId = working.activeId;
+  });
+
   $effect(() => {
     void resolveName(symbol);
   });
+
+  $effect(() => {
+    const known = catalog;
+    const who = user;
+    if (!known) {
+      return;
+    }
+
+    const token = who?.id ?? '';
+    if (token === layoutsFor) {
+      return;
+    }
+    layoutsFor = token;
+    void loadLayouts(who);
+  });
+
+  $effect(() => {
+    const scheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => {
+      colors = seriesPalette();
+    };
+
+    scheme.addEventListener('change', update);
+    return () => scheme.removeEventListener('change', update);
+  });
+
 </script>
 
 <main>
@@ -55,6 +308,15 @@
     <div class="current">
       <strong>{symbol}</strong>
       <span class="name">{name}</span>
+    </div>
+
+    <div class="account">
+      {#if user}
+        <span class="who" title={user.email}>{user.email}</span>
+        <button type="button" class="plain" onclick={() => void signOut()}>Sign out</button>
+      {:else}
+        <button type="button" class="plain" onclick={() => (signInOpen = true)}>Sign in</button>
+      {/if}
     </div>
   </header>
 
@@ -76,6 +338,13 @@
       </button>
     </div>
 
+    <div class="group" role="group" aria-label="Indicators">
+      <button type="button" class:on={panelOpen} onclick={() => (panelOpen = !panelOpen)}>
+        Indicators{indicators.length > 0 ? ` · ${indicators.length}` : ''}
+      </button>
+      <button type="button" onclick={openPicker} aria-label="Add an indicator">+</button>
+    </div>
+
     <span class="count">{count} bars loaded</span>
   </nav>
 
@@ -95,17 +364,55 @@
     {/if}
   </div>
 
-  <Chart
-    {symbol}
-    {timeframe}
-    {mode}
-    onHover={(bar) => (hovered = bar)}
-    onLoaded={(bar, total) => {
-      latest = bar;
-      count = total;
-    }}
-  />
+  <div class="workspace">
+    <Chart
+      {symbol}
+      {timeframe}
+      {mode}
+      {indicators}
+      {colors}
+      onHover={(bar) => (hovered = bar)}
+      onLoaded={(bar, total) => {
+        latest = bar;
+        count = total;
+      }}
+    />
+
+    {#if panelOpen}
+      <IndicatorPanel
+        {catalog}
+        {indicators}
+        {colors}
+        {note}
+        {layouts}
+        {dirty}
+        {layoutError}
+        activeId={activeLayoutId}
+        busy={layoutBusy}
+        onChange={applyIndicators}
+        onSelectLayout={selectLayout}
+        onSaveLayout={(name, id) => void saveLayout(name, id)}
+        onDeleteLayout={() => void removeLayout()}
+        onAdd={openPicker}
+        onClose={() => (panelOpen = false)}
+      />
+    {/if}
+  </div>
 </main>
+
+{#if pickerOpen}
+  <IndicatorPicker
+    {catalog}
+    {full}
+    error={catalogError ?? addError}
+    onAdd={add}
+    onClose={() => (pickerOpen = false)}
+  />
+{/if}
+
+{#if signInOpen}
+  <SignIn onDone={signedIn} onClose={() => (signInOpen = false)} />
+{/if}
 
 <style>
   main {
@@ -178,6 +485,37 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .account {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-shrink: 0;
+  }
+
+  .who {
+    color: var(--muted);
+    font-size: 0.75rem;
+    max-width: 11rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .plain {
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--accent);
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .plain:hover {
+    text-decoration: underline;
   }
 
   nav {
@@ -276,6 +614,13 @@
     color: var(--bad);
   }
 
+  .workspace {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
   @media (max-width: 46rem) {
     header {
       flex-wrap: wrap;
@@ -286,6 +631,10 @@
       order: 3;
       width: 100%;
       margin-left: 0;
+    }
+
+    .account {
+      order: 2;
     }
 
     nav {

@@ -36,6 +36,16 @@ const volume = new Intl.NumberFormat('pt-BR', {
   maximumFractionDigits: 1,
 });
 
+const large = new Intl.NumberFormat('pt-BR', {
+  notation: 'compact',
+  maximumFractionDigits: 2,
+});
+
+const fine = new Intl.NumberFormat('pt-BR', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
 const offsets = new Map<number, number>();
 
 function pad(value: number): string {
@@ -105,6 +115,17 @@ export function formatPrice(value: number): string {
 
 export function formatVolume(value: number): string {
   return volume.format(value);
+}
+
+export function formatValue(value: number): string {
+  const size = Math.abs(value);
+  if (size >= 1e6) {
+    return large.format(value);
+  }
+  if (size > 0 && size < 1) {
+    return fine.format(value);
+  }
+  return price.format(value);
 }
 
 export function formatChange(open: number, close: number): string {

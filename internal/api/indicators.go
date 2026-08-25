@@ -19,6 +19,7 @@ type indicatorBody struct {
 	Source  string             `json:"source,omitempty"`
 	Overlay bool               `json:"overlay"`
 	Warmup  int                `json:"warmup"`
+	Offsets []int              `json:"offsets"`
 	Series  []seriesBody       `json:"series"`
 }
 
@@ -59,6 +60,7 @@ func computeIndicators(instances []indicator.Instance, prime, page []market.Cand
 			Params:  instance.Params.All(),
 			Overlay: instance.Spec.Overlay,
 			Warmup:  instance.Indicator.Warmup(),
+			Offsets: instance.Offsets,
 			Series:  make([]seriesBody, 0, len(instance.Spec.Outputs)),
 		}
 		if instance.Spec.Sourced {

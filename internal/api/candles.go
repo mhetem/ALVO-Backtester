@@ -1,13 +1,10 @@
 package api
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/mhetem/ALVO-Backtester/internal/indicator"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
@@ -27,6 +24,7 @@ type candlesBody struct {
 	Close      []float64       `json:"c"`
 	Volume     []int64         `json:"v"`
 	NextCursor string          `json:"next_cursor,omitempty"`
+	Future     []int64         `json:"future,omitempty"`
 	Indicators []indicatorBody `json:"indicators,omitempty"`
 }
 
@@ -82,18 +80,8 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	symbol, err := s.queries.GetSymbolByTicker(r.Context(), ticker)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			respondError(w, r, http.StatusNotFound, "no such symbol: "+ticker)
-			return
-		}
-		s.log.ErrorContext(r.Context(), "looking up symbol",
-			slog.String("request_id", RequestIDFrom(r.Context())),
-			slog.String("ticker", ticker),
-			slog.Any("err", err),
-		)
-		respondError(w, r, http.StatusInternalServerError, "internal server error")
+	symbol, ok := s.findSymbol(w, r, ticker)
+	if !ok {
 		return
 	}
 
@@ -136,6 +124,7 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body.Indicators = computeIndicators(instances, prime, page.Candles)
+		body.Future = s.futureBuckets(timeframe, page, cursor, indicator.MaxOffset(instances))
 	}
 
 	cacheControl := cacheOpenRange
@@ -144,6 +133,20 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondCached(w, r, body, cacheControl)
+}
+
+func (s *Server) futureBuckets(tf market.Timeframe, page market.Page, cursor time.Time, ahead int) []int64 {
+	if ahead < 1 || len(page.Candles) == 0 || !cursor.IsZero() {
+		return nil
+	}
+
+	newest := page.Candles[len(page.Candles)-1].TS
+	stamps := make([]int64, 0, ahead)
+	for _, bucket := range s.cal.FutureBuckets(tf, newest, ahead) {
+		stamps = append(stamps, bucket.Unix())
+	}
+
+	return stamps
 }
 
 func newCandlesBody(ticker string, page market.Page) candlesBody {

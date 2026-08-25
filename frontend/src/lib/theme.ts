@@ -6,16 +6,41 @@ import {
   type CandlestickStyleOptions,
   type ChartOptions,
   type DeepPartial,
+  type HistogramStyleOptions,
+  type LineStyleOptions,
   type SeriesOptionsCommon,
 } from 'lightweight-charts';
 
-import { formatPrice } from './format';
+import { formatPrice, formatValue } from './format';
 
 const priceFormat = {
   type: 'custom',
   minMove: 0.01,
   formatter: formatPrice,
 } as const;
+
+const valueFormat = {
+  type: 'custom',
+  minMove: 0.01,
+  formatter: formatValue,
+} as const;
+
+export const SERIES_SLOTS = 10;
+
+export const AUTO_SLOTS = 8;
+
+const fallbackSeries = [
+  '#3987e5',
+  '#c98500',
+  '#d55181',
+  '#9085e9',
+  '#008300',
+  '#e66767',
+  '#199e70',
+  '#d95926',
+  '#ffffff',
+  '#000000',
+];
 
 export type Palette = {
   background: string;
@@ -58,6 +83,44 @@ export function palette(): Palette {
     up: token(styles, '--chart-up', fallback.up),
     down: token(styles, '--chart-down', fallback.down),
     font: token(styles, '--font-ui', fallback.font),
+  };
+}
+
+export function seriesPalette(): string[] {
+  if (typeof window === 'undefined') {
+    return [...fallbackSeries];
+  }
+
+  const styles = getComputedStyle(document.documentElement);
+  return fallbackSeries.map((spare, i) => token(styles, `--series-${i + 1}`, spare));
+}
+
+export function lineOptions(
+  color: string,
+  price: boolean,
+  dotted: boolean,
+): DeepPartial<LineStyleOptions & SeriesOptionsCommon> {
+  return {
+    color,
+    lineWidth: 2,
+    lineStyle: dotted ? LineStyle.Dotted : LineStyle.Solid,
+    lastValueVisible: true,
+    priceLineVisible: false,
+    crosshairMarkerVisible: false,
+    priceFormat: price ? priceFormat : valueFormat,
+  };
+}
+
+export function histogramOptions(
+  color: string,
+  price: boolean,
+): DeepPartial<HistogramStyleOptions & SeriesOptionsCommon> {
+  return {
+    color,
+    base: 0,
+    lastValueVisible: true,
+    priceLineVisible: false,
+    priceFormat: price ? priceFormat : valueFormat,
   };
 }
 

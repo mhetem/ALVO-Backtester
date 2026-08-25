@@ -31,6 +31,7 @@ type Instance struct {
 	Key       string
 	Spec      Spec
 	Params    Params
+	Offsets   []int
 	Indicator Indicator
 }
 
@@ -49,6 +50,7 @@ func New(name string, values map[string]float64, source Source) (Instance, error
 		Key:       spec.key(params),
 		Spec:      spec,
 		Params:    params,
+		Offsets:   spec.offsets(params),
 		Indicator: spec.New(params),
 	}, nil
 }
@@ -140,6 +142,16 @@ func ParseList(text string) ([]Instance, error) {
 	}
 
 	return instances, nil
+}
+
+func MaxOffset(instances []Instance) int {
+	ahead := 0
+	for _, instance := range instances {
+		for _, offset := range instance.Offsets {
+			ahead = max(ahead, offset)
+		}
+	}
+	return ahead
 }
 
 func PrimeBars(instances []Instance) int {

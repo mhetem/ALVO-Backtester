@@ -47,6 +47,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /api/v1/auth/revoke", s.handleRevoke)
 
+	mux.Handle("GET /api/v1/chart-layouts", s.requireAuth(http.HandlerFunc(s.handleListChartLayouts)))
+	mux.Handle("POST /api/v1/chart-layouts", s.requireAuth(http.HandlerFunc(s.handleCreateChartLayout)))
+	mux.Handle("PUT /api/v1/chart-layouts/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateChartLayout)))
+	mux.Handle("DELETE /api/v1/chart-layouts/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteChartLayout)))
+
 	mux.Handle("GET /api/v1/admin/brapi-usage", s.requireAuth(http.HandlerFunc(s.handleBrapiUsage)))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
