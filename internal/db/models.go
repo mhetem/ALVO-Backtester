@@ -6,6 +6,8 @@ package database
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type BrapiUsage struct {
@@ -41,6 +43,15 @@ type IngestRun struct {
 	DurationMs *int32     `json:"duration_ms"`
 }
 
+type RefreshToken struct {
+	TokenHash string     `json:"token_hash"`
+	UserID    uuid.UUID  `json:"user_id"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
 type Symbol struct {
 	ID         int64      `json:"id"`
 	Ticker     string     `json:"ticker"`
@@ -57,4 +68,12 @@ type Symbol struct {
 	LastSeen   *time.Time `json:"last_seen"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+type User struct {
+	ID             uuid.UUID `json:"id"`
+	Email          string    `json:"email"`
+	HashedPassword string    `json:"hashed_password"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }

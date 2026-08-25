@@ -167,7 +167,9 @@ on the host but Docker.
 - [x] `go mod init github.com/mhetem/ALVO-Backtester`
 - [x] Deps: `jackc/pgx/v5`, `pressly/goose/v3`. `sqlc` is a build tool, not a dep.
       `golang-jwt/jwt/v5` and `golang.org/x/crypto` land in Phase 4 — `go mod tidy` drops a
-      require nothing imports, so adding them early is fiction
+      require nothing imports, so adding them early is fiction. *Phase 4 note: it landed as
+      `golang-jwt/jwt/v5`, `google/uuid` and `alexedwards/argon2id`, with `x/crypto` arriving
+      indirectly underneath argon2id rather than as a direct import*
 - [x] `internal/config`: `DATABASE_URL`, `PORT`, `BRAPI_TOKEN`, `JWT_SECRET`, `PLATFORM`.
       Missing required var = refuse to start, loudly
 - [x] `sqlc.yaml`: engine `postgresql`, `sql/schema` + `sql/queries`
@@ -366,8 +368,8 @@ third-party field that might change shape.
 >   tickers and nothing else. Real IBOV/IBrX-100/SMLL compositions are Phase 12's first task, by
 >   the plan's own sequencing — inventing a 200-ticker list now would commit a wrong file to the
 >   record that git is supposed to keep.
-> - **`/api/v1/admin/brapi-usage` is unauthenticated.** It returns nothing but daily request
->   counts. Phase 4 puts it behind `RequireAuth` when the middleware exists.
+> - ~~**`/api/v1/admin/brapi-usage` is unauthenticated.**~~ **Closed in Phase 4** — it is now the
+>   one endpoint behind `RequireAuth`, and was the only non-public one that existed to put there.
 > - **The 2020–2023 holidays need checking against B3's published calendar.** The generated file
 >   assumes B3 dropped the São Paulo municipal holidays (25/01, 09/07) from 2022 and picked up
 >   20/11 again in 2024 as a national holiday. Easter-derived dates are computed, not typed, so
@@ -798,8 +800,9 @@ so the window's lower bound never costs anything and paging is genuinely unbound
 >   moves the cost off repeat requests, which was the cheap half; a server-side cache still waits for
 >   profiling.
 > - **`/api/v1/symbols` and `/api/v1/candles` are public**, which is the plan's own call — market
->   data is not user data. Phase 4 puts only strategies, runs and watchlists behind `RequireAuth`,
->   plus `/admin/brapi-usage`, which is still open from Phase 1.
+>   data is not user data. ~~Phase 4 puts only strategies, runs and watchlists behind `RequireAuth`,
+>   plus `/admin/brapi-usage`, which is still open from Phase 1.~~ **Done in Phase 4** — both stayed
+>   public, and `/admin/brapi-usage` went behind the middleware.
 > - **The frontend has no router.** One chart, one symbol, no deep links — the SPA fallback is
 >   already in place for when Phase 7 or 8 needs real routes.
 > - **The logo assets are not in yet.** The header mark and the empty-state arc are CSS circles
@@ -824,23 +827,153 @@ CREATE TABLE users (
 );
 
 CREATE TABLE refresh_tokens (
-    token      TEXT PRIMARY KEY,
+    token_hash TEXT PRIMARY KEY,
     user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at TIMESTAMPTZ NOT NULL,
-    revoked_at TIMESTAMPTZ
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-- [ ] `POST /api/v1/auth/register`, `/login`, `/refresh`, `/revoke`
-- [ ] bcrypt for passwords, HS256 JWT for access (15 min), 60-day random refresh token
-- [ ] `RequireAuth` middleware puts `user_id` in the request context
-- [ ] Market data endpoints stay **public** — candles aren't user data and caching them per-user
+- [x] `POST /api/v1/auth/register`, `/login`, `/refresh`, `/revoke`
+- [x] ~~bcrypt~~ **argon2id** for passwords, HS256 JWT for access (15 min), 60-day random refresh
+      token *(see the decisions below)*
+- [x] `RequireAuth` middleware puts `user_id` in the request context
+- [x] Market data endpoints stay **public** — candles aren't user data and caching them per-user
       is waste. Only strategies, runs and watchlists sit behind auth
-- [ ] `JWT_SECRET` and `BRAPI_TOKEN` arrive as env vars, never baked into the image. A secret in a
+- [x] `JWT_SECRET` and `BRAPI_TOKEN` arrive as env vars, never baked into the image. A secret in a
       layer is in the registry forever
 
 **Done when:** register → login → call a protected endpoint → refresh → revoke all behave, with
 tests covering expired and tampered tokens.
+
+### Decisions this phase forced
+
+**argon2id instead of bcrypt.** The plan said bcrypt because Chirpy said bcrypt. argon2id is the
+current password-hashing recommendation, `alexedwards/argon2id` has sane defaults and encodes its
+parameters into the hash string, and it sidesteps bcrypt's 72-byte silent truncation — a password
+longer than 72 bytes has its tail ignored, which is a real correctness bug rather than a stylistic
+one. The cost is memory: `DefaultParams` is 64 MB per verification, which matters on a 4 GB box
+under concurrent logins and is the number to turn down first if Phase 13's rate limiting isn't
+enough. Passwords are capped at 256 bytes so an unbounded body can't turn one request into a
+multi-second hash.
+
+**`pgtype` stays out of the service layer, which cost a `sqlc.yaml` override.** Phase 1 added
+`timestamptz`, `date` and `numeric` overrides so no `pgtype` reached the handlers. `uuid` had no
+override because no table used one until now, so `users.id` generated as `pgtype.UUID` while
+`auth.ValidateJWT` returns a `uuid.UUID` — every handler would have converted between them by hand,
+and a forgotten `Valid: true` is a silent NULL rather than a compile error. Adding
+`db_type: uuid → github.com/google/uuid.UUID` keeps the property Phase 1 established, and it has to
+land before Phases 8 and 9 add four more `user_id` columns.
+
+**The refresh token travels in the `Authorization` header, not the body.** That's Chirpy's shape and
+the plan asked for Chirpy's shape. It means `/refresh` and `/revoke` take a bearer credential that is
+*not* a JWT, which reads oddly until you notice it makes both endpoints uniform with every other
+authenticated call and keeps the token out of request bodies and logs.
+
+**`/refresh` does not rotate.** It mints a new access token and leaves the refresh token alone.
+Rotation — issuing a fresh refresh token on every use and revoking the old one — detects replay of a
+stolen token, but it also breaks any client that fires two refreshes concurrently, and it needs a
+reuse-detection story to be worth anything. Deferred deliberately; the schema already supports it,
+since `revoked_at` is exactly the column rotation would write.
+
+**Only `GetUserByEmail` can return a password hash.** Every other user-shaped query names its
+`RETURNING` columns, so `hashed_password` cannot reach a handler that has no business with it. The
+API DTO boundary exists anyway — login needs the hash and must not serialize it — but narrowing the
+queries means a future handler that forgets the DTO leaks nothing.
+
+**Email is lowercased on the way in.** Postgres `UNIQUE` is case-sensitive, so without normalization
+`Trader@example.com` and `trader@example.com` are two accounts, and whichever one you registered
+with is the only one that logs in. Lowercasing the local part is technically not RFC-correct — local
+parts may be case-sensitive — but no mail provider in practice treats them so, and two accounts for
+one human is the worse failure. `mail.ParseAddress` also rejects the `Name <addr>` form, which would
+otherwise store a display name as an email.
+
+**JWT claims are validated during parsing, not after it.** `ValidateJWT` passes `WithValidMethods`,
+`WithIssuer` and `WithExpirationRequired` to the parser rather than reading claims back and checking
+them itself. `WithValidMethods` is the one that matters: without it, the library will attempt
+whatever algorithm the token's own header names, which is the algorithm-confusion class of bug.
+`WithExpirationRequired` closes the adjacent hole where a token with no `exp` at all validates
+forever.
+
+**Revoke reports whether it revoked anything.** `RevokeRefreshToken` is `:execrows` with
+`AND revoked_at IS NULL`, so the handler can answer 401 for an unknown or already-revoked token
+instead of 204 for everything, and a replayed revoke can't push `revoked_at` forward to a later
+timestamp than the real one.
+
+**The database stores a SHA-256 of the refresh token, and the column says so.** The plan originally
+copied Chirpy's raw-token storage, which makes a `pg_dump` — the artifact Phase 13 mails to object
+storage nightly — a list of every live session in plaintext. Hashing on the way in means a stolen
+dump grants nothing: the client holds the only copy of the real token, and a lookup hashes the
+presented value and matches on the digest. The column is `token_hash` rather than `token` precisely
+so the next person to touch it cannot compare it against a raw token without noticing.
+
+**Plain SHA-256, not argon2id, and not HMAC.** A password needs a slow KDF because it has perhaps 30
+bits of entropy and the attacker's job is guessing it. A refresh token is 32 bytes from
+`crypto/rand` — 256 bits — so there is nothing to guess and a slow hash would only add latency to
+every authenticated refresh. HMAC keyed on `JWT_SECRET` was the other candidate; it adds a pepper
+that a dump alone can't recover, but against a value with full entropy that buys nothing, and it
+would couple every live session's validity to a secret that ought to be rotatable on its own.
+Lookup is by primary key, so Postgres does the comparison inside a B-tree descent — not constant
+time, but timing a 256-bit-entropy index probe is not an attack anyone can mount.
+
+**gosec now skips generated files, because naming a query after a token trips G101.** sqlc names its
+query constants after the query, so `const createRefreshToken = "INSERT INTO refresh_tokens ..."` is
+a string constant whose *name* matches G101's credential pattern. All three refresh-token queries
+fire as HIGH severity, LOW confidence, and there is nowhere to put a `#nosec` comment that `make
+sqlc` won't overwrite. The alternatives were renaming the queries to dodge a regex — giving up the
+domain's own vocabulary — or dropping G101 everywhere, which would also stop it catching a real
+hardcoded secret in hand-written code. `gosec -exclude-generated` keys off the standard
+`// Code generated … DO NOT EDIT.` header instead, so it suppresses exactly the nine files in
+`internal/db` and scans everything else unchanged. It is set in both the `sec` target and CI, which
+have to agree or the PR fails on something `make check` passes.
+
+> **Status: done and verified end to end against the running stack.** The full sequence the
+> done-when asks for was exercised over HTTP, and each step behaved:
+>
+> | step | result |
+> |---|---|
+> | register | 201, and `Phase4.Check@Example.com` came back stored as `phase4.check@example.com` |
+> | register again, lowercased | **409** — normalization means one address is one account |
+> | login, wrong password | 401 `incorrect email or password` |
+> | login | 200 with user, access token, refresh token, `expires_in: 900` |
+> | protected endpoint, no header | 401 with `WWW-Authenticate: Bearer` |
+> | protected endpoint, access token | 200 |
+> | protected endpoint, *refresh* token | **401** — the two token types are not interchangeable |
+> | refresh | 200, new access token, which then opens the protected endpoint |
+> | revoke | 204 |
+> | revoke again | **401** — `AND revoked_at IS NULL` makes the second one a no-op, not a silent success |
+> | refresh after revoke | **401** |
+>
+> **The hashing was checked against the database, not just asserted in a test.** The row's
+> `token_hash` equals `sha256(issued token)` computed independently at the shell, and the issued
+> token itself appears nowhere in the table. `users.hashed_password` reads
+> `$argon2id$v=19$m=65536,t=1,p=1$…` — the parameters are in the hash, which is what makes them
+> changeable later without a migration. Deleting the user cascaded the refresh token away, so the
+> FK does what `ON DELETE CASCADE` claims.
+>
+> Offline tests cover what HTTP can't reach cheaply: `internal/auth` covers the JWT round trip,
+> expiry, tampering (swapped payload, swapped signature, truncation, garbage), a foreign secret, a
+> foreign issuer, the `alg: none` forgery, a token with no `exp`, a non-UUID subject, the
+> bearer-header parser, and the digest's stability and width; `internal/api` covers every 400 path on
+> register and login, the 401 paths on refresh and revoke, and that `RequireAuth` rejects missing,
+> malformed, expired and foreign-signed tokens while putting the user id in the context for a good
+> one.
+>
+> Carried into later phases, deliberately:
+> - **`/api/v1/admin/brapi-usage` is the only endpoint behind `RequireAuth`**, because it is the only
+>   non-public endpoint that exists. It closes Phase 1's carry-over. Strategies, runs and watchlists
+>   attach to the same middleware as Phases 7-9 add them.
+> - **There is no frontend auth UI.** Phase 4 is backend-only by the plan's own checklist; the app
+>   still loads straight into the chart, which is public. Whoever adds a login screen also has to
+>   decide where the access token lives in the browser, and `localStorage` is the wrong answer.
+> - **Login has a timing side channel.** An unknown email returns without hashing anything; a known
+>   one spends ~50 ms in argon2id. That difference enumerates registered addresses. The messages are
+>   already identical, so the fix is either a dummy verify against a fixed hash or Phase 13's
+>   per-IP rate limiting, which is the mitigation that actually generalizes.
+> - **Nothing deletes expired or revoked refresh tokens.** The table grows without bound at 60 days
+>   per row. Irrelevant at this size, a cleanup job whenever it isn't.
 
 ---
 
@@ -1194,18 +1327,18 @@ Collected here because the code carries no comments — this is where the reason
     folded. If a reconciliation check ever flags the two disagreeing, the stored `1d` wins.
     *Measured in Phase 2: over 43 sessions the folded O/H/L matched the official daily bar 39
     times, the folded close matched 4 times.*
-12. **brapi's 5m series depends on the requested range, and `startDate`/`endDate` don't work for
+11. **brapi's 5m series depends on the requested range, and `startDate`/`endDate` don't work for
     it at all.** Intraday requests silently discard the dates and fall back to `range=1mo`, which
     returns a different — and demonstrably wrong — series that is missing the opening bars of every
     session. Only an explicit `range` token of `3mo` or wider returns the series that reconciles
     against the official daily bar. So 5m is always one range request per symbol, trimmed
     client-side; never a date window, and never a narrow tail refresh, which would upsert bad bars
     over good ones. Daily is unaffected and honours dates normally. Evidence in Phase 2's notes.
-13. **Sessions are not uniformly populated.** A full B3 day is 84 five-minute buckets but a real
+12. **Sessions are not uniformly populated.** A full B3 day is 84 five-minute buckets but a real
     one delivers 79-83; bars with no trades don't exist. Anything that assumes a fixed bar count
     per session — resampling, gap detection, warmup arithmetic — has to fold what is present
     rather than what should be.
-11. **Development ran on four large caps.** PETR4, VALE3, ITUB4 and MGLU3 are liquid, gap rarely,
+13. **Development ran on four large caps.** PETR4, VALE3, ITUB4 and MGLU3 are liquid, gap rarely,
     and never halt. The first backfill of illiquid tickers will surface zero-volume bars, missing
     sessions and stale prices that four blue chips never exercised. Expect Phase 12 to find bugs
     in code that looked finished.

@@ -8,17 +8,27 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ctxKey int
 
-const ctxKeyRequestID ctxKey = iota
+const (
+	ctxKeyRequestID ctxKey = iota
+	ctxKeyUserID
+)
 
 const headerRequestID = "X-Request-Id"
 
 func RequestIDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(ctxKeyRequestID).(string)
 	return id
+}
+
+func UserIDFrom(ctx context.Context) (uuid.UUID, bool) {
+	id, ok := ctx.Value(ctxKeyUserID).(uuid.UUID)
+	return id, ok
 }
 
 func newRequestID() string {

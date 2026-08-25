@@ -74,8 +74,8 @@ vet: ## Run go vet
 lint: ## Run staticcheck
 	staticcheck ./...
 
-sec: ## Run gosec
-	gosec ./...
+sec: ## Run gosec, skipping sqlc's generated output
+	gosec -exclude-generated ./...
 
 fmt: ## Format Go sources
 	gofmt -w .

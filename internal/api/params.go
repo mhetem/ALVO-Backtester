@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -8,6 +10,16 @@ import (
 	"strings"
 	"time"
 )
+
+const maxRequestBytes = 4096
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		return errors.New("request body must be a JSON object")
+	}
+	return nil
+}
 
 func intParam(r *http.Request, name string, fallback int) (int, error) {
 	value := strings.TrimSpace(r.URL.Query().Get(name))
