@@ -9,23 +9,25 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/mhetem/ALVO-Backtester/internal/indicator"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
 )
 
 const firstHistoryYear = 1990
 
 type candlesBody struct {
-	Symbol     string    `json:"symbol"`
-	Timeframe  string    `json:"timeframe"`
-	Base       string    `json:"base"`
-	Count      int       `json:"count"`
-	TS         []int64   `json:"ts"`
-	Open       []float64 `json:"o"`
-	High       []float64 `json:"h"`
-	Low        []float64 `json:"l"`
-	Close      []float64 `json:"c"`
-	Volume     []int64   `json:"v"`
-	NextCursor string    `json:"next_cursor,omitempty"`
+	Symbol     string          `json:"symbol"`
+	Timeframe  string          `json:"timeframe"`
+	Base       string          `json:"base"`
+	Count      int             `json:"count"`
+	TS         []int64         `json:"ts"`
+	Open       []float64       `json:"o"`
+	High       []float64       `json:"h"`
+	Low        []float64       `json:"l"`
+	Close      []float64       `json:"c"`
+	Volume     []int64         `json:"v"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+	Indicators []indicatorBody `json:"indicators,omitempty"`
 }
 
 func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +76,12 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	instances, err := indicator.ParseList(r.URL.Query().Get("indicators"))
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	symbol, err := s.queries.GetSymbolByTicker(r.Context(), ticker)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -108,12 +116,34 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body := newCandlesBody(symbol.Ticker, page)
+
+	if len(instances) > 0 {
+		prime, err := s.candles.Prime(r.Context(), market.PrimeRequest{
+			SymbolID:  symbol.ID,
+			Timeframe: timeframe,
+			Before:    page.Oldest(),
+			Bars:      indicator.PrimeBars(instances),
+		})
+		if err != nil {
+			s.log.ErrorContext(r.Context(), "priming indicators",
+				slog.String("request_id", RequestIDFrom(r.Context())),
+				slog.String("ticker", ticker),
+				slog.String("timeframe", timeframe.String()),
+				slog.Any("err", err),
+			)
+			respondError(w, r, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		body.Indicators = computeIndicators(instances, prime, page.Candles)
+	}
+
 	cacheControl := cacheOpenRange
 	if !page.End.After(time.Now()) {
 		cacheControl = cacheClosedRange
 	}
 
-	respondCached(w, r, newCandlesBody(symbol.Ticker, page), cacheControl)
+	respondCached(w, r, body, cacheControl)
 }
 
 func newCandlesBody(ticker string, page market.Page) candlesBody {

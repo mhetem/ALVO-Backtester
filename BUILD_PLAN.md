@@ -1000,20 +1000,22 @@ type Indicator interface {
 }
 ```
 
-- [ ] **Streaming, not batch.** `Update` per bar in O(1). A batch API that recomputes from scratch
+- [x] **Streaming, not batch.** `Update` per bar in O(1). A batch API that recomputes from scratch
       per bar makes the backtest loop O(n²) and rules out live updates later. `Compute(series)` is
-      a thin fold over `Update`, not a separate implementation
-- [ ] Multi-output indicators return positional `Values()` aligned with a static `Outputs() []string`
+      a thin fold over `Update`, not a separate implementation *(three folds, actually: `Feed`
+      updates without emitting, `Emit` collects from the first ready bar, `Compute` is
+      `Reset` + `Emit`. The API needs the first two separately — see priming below)*
+- [x] Multi-output indicators return positional `Values()` aligned with a static `Outputs() []string`
       on the spec. String lookup per bar in the hot loop is avoidable, so avoid it
-- [ ] `Warmup()` is how many bars before `Ready()`. The backtester skips those bars entirely — an
+- [x] `Warmup()` is how many bars before `Ready()`. The backtester skips those bars entirely — an
       EMA emitting values during its seeding window is a silent source of fake early trades
-- [ ] Registry: `indicator.Register(name, Spec)` where `Spec` declares params (name, type, default,
+- [x] Registry: `indicator.Register(name, Spec)` where `Spec` declares params (name, type, default,
       min/max) and builds an instance. The `?indicators=` query param, the strategy compiler, and
       the UI's parameter form all read from this one place
-- [ ] `source` selector: `close | open | high | low | hl2 | hlc3 | ohlc4`
-- [ ] Ring buffers for rolling windows; no reallocation per bar
-- [ ] First five, to prove the shape: **SMA, EMA, RSI, MACD, Bollinger Bands**
-- [ ] Golden-value tests: a fixed 200-bar fixture with expected outputs to 6 decimals, cross-checked
+- [x] `source` selector: `close | open | high | low | hl2 | hlc3 | ohlc4`
+- [x] Ring buffers for rolling windows; no reallocation per bar
+- [x] First five, to prove the shape: **SMA, EMA, RSI, MACD, Bollinger Bands**
+- [x] Golden-value tests: a fixed 200-bar fixture with expected outputs to 6 decimals, cross-checked
       against a reference implementation. Every later indicator gets the same treatment
 
 **Done when:** `GET /api/v1/candles?...&indicators=ema:9,ema:21,rsi:14` returns aligned series, and
@@ -1022,6 +1024,166 @@ the golden tests pass.
 > Warmup and NaN handling are where hand-written indicator libraries quietly go wrong. Decide once,
 > here: values before `Ready()` are **not emitted** — not zero, not NaN. The API returns a `start`
 > offset per indicator series so the chart aligns without padding.
+
+### Decisions this phase forced
+
+**`Warmup()` is the index of the first value, not a count of bars to skip.** "How many bars before
+`Ready()`" reads both ways — SMA(20) is ready *after* 20 bars, so the number is either 19 or 20 and
+an off-by-one here is a whole bar of fake signal. It is 19: `Warmup()` returns the number of leading
+bars that carry no value, which makes it exactly the `start` offset the response reports and exactly
+the index a backtest should begin at. `TestEveryRegisteredIndicatorEmitsExactlyAtItsWarmup` asserts
+`Compute(...).Start == Warmup()` for every registered indicator, and
+`TestNothingIsEmittedBeforeReady` walks bar by bar asserting `Ready() == (i >= Warmup())`, so the
+convention cannot drift as Phase 6 adds thirty more.
+
+**A page is primed, not restarted — otherwise every pan-left draws a new hole.** Computing
+indicators over the returned page alone is the obvious implementation and it is wrong twice: the
+first 20 bars of *every* page would have no SMA(20), and the EMA on page two would disagree with the
+EMA on page one at the same timestamp, drawing a visible seam exactly where Phase 3 worked to remove
+one. So `CandleService.Prime` reads the buckets immediately *before* the page and feeds them through
+`Update` without emitting. `from` bounds what is *returned*, not what is *read*, so the prime query
+deliberately ignores it and reaches back past the window's lower edge. It reuses `ListCandlesDesc`
+with a zero lower bound and the same fold-boundary trim as `Page` — which is why **Phase 5 adds no
+SQL and needs no `make sqlc`**.
+
+**How deep to prime is a question only the indicator can answer.** An SMA(200) needs exactly 199
+bars — its window is finite, so bar 200 back has no influence at all. An EMA(9) needs far more than
+its 8-bar warmup, because the seed's error decays rather than falls out. A single uniform multiple
+serves neither: at 8× the warmup, SMA(200) would read 1,600 bars for the 199 it needs, and RSI(14)
+would still be off by 4.6e-3 — Wilder's smoothing uses α = 1/period against an EMA's 2/(period+1),
+so it remembers roughly twice as long. Hence the optional `Primer` interface: the default depth is
+`Warmup()`, and an indicator that carries state past its warmup overrides it. EMA and MACD ask for
+8× their periods, RSI for 16×. Measured against 2,000 synthetic bars, primed page versus full
+history:
+
+| indicator | prime bars | worst disagreement |
+|---|---|---|
+| `sma:20` | 19 | 5e-14 |
+| `sma:200` | 199 | 6e-14 |
+| `ema:9` | 72 | 1.3e-8 |
+| `ema:21` | 168 | 2.4e-8 |
+| `rsi:14` | 224 | 8.3e-7 |
+| `macd:12:26:9` | 280 | 3.3e-10 |
+| `bb:20:2` | 19 | 6.3e-12 |
+
+All of it is orders of magnitude under a centavo, which is the only precision a chart or a fill
+price can express. Phase 6's ATR and ADX are Wilder's too and should say so with `PrimeBars()`;
+DEMA/TEMA nest EMAs and need the same treatment.
+
+**`start` survives priming, because history runs out.** Priming fixes the page boundary; it cannot
+invent bars before a symbol's first one. A chart panned to the very beginning of PETR4's history
+still gets `start: 19` on an SMA(20), so the response reports the offset per series and the client
+draws from there rather than padding with zeros or nulls.
+
+**`Ready()` is all-or-nothing per indicator, not per output.** MACD's line exists 8 bars before its
+signal line does. Emitting the line early with a null signal would put nulls in a `[]float64` and
+make every consumer handle them; instead MACD reports `Ready()` only once every output is real, and
+its warmup is `(slow-1) + (signal-1)` = 33 on the defaults. Same rule for Bollinger's three bands.
+That is the plan's own "not zero, not NaN" applied one level up.
+
+**Every spelling of an indicator collapses to one canonical key.** `ema:9`, `ema:period=9`,
+`EMA : 9 ` and `ema:9:source=close` all key as `ema:9`, so asking for the same series twice in one
+request dedups instead of computing it twice, and the `ETag` doesn't fork over whitespace. Params
+are positional in spec order or named, which keeps `?indicators=ema:9,ema:21,rsi:14` short while
+letting `bb:20:mult=2.5` be readable. `source` is a reserved name handled by the framework, so no
+indicator can define a parameter that shadows it.
+
+**The registry answers "what can I ask for" and every error message proves it.** An unknown name
+lists the catalogue, an out-of-range param prints its bounds, an unknown parameter names the ones
+that exist. Phase 6 hangs `GET /api/v1/indicators` on `indicator.Catalog()`, which already carries
+the title, group, overlay flag, parameter schema and output names the picker needs — the endpoint
+is the only part of that not written yet, and it is Phase 6's by the plan's sequencing.
+
+**EMA seeds with an SMA of its first `period` values.** Seeding with the first price instead is
+simpler and is what most naive implementations do, but it makes the first hundred bars depend
+entirely on one arbitrary tick, and it disagrees with TA-Lib and with TradingView — which is what
+anyone checking these numbers against a chart they trust will compare to. The seed is also what
+makes priming converge: it starts the recursion near the truth instead of far from it.
+
+**Wilder's smoothing is already its own helper, one phase early.** Phase 6 asks for it because RSI,
+ATR and ADX otherwise get it subtly wrong three times independently. RSI needs it now, so it lands
+now, in `smooth.go`, written as `value += (x - value)/period` rather than
+`(value*(period-1) + x)/period` — algebraically identical, one fewer multiplication of a large
+number by a large number.
+
+**Rolling variance is the stable sliding update, not a sum of squares.** Bollinger needs a standard
+deviation per bar and the O(1) way to get one is to carry Σx². For prices around 30 with a spread
+around 1, Σx² and (Σx)²/n are within 0.1% of each other and subtracting them throws away most of the
+significant digits. The sliding Welford update carries Σ(x-μ)² directly and updates it in constant
+time without ever forming that difference, and `TestWindowStddevMatchesTheNaiveComputation` pins it
+against a recomputed-from-scratch reference to 1e-12. The mean comes from the ring's running sum,
+so Bollinger's middle band and a bare SMA of the same period are the same number.
+
+**The golden fixture is real PETR4 bars and the reference is Python.** 200 daily bars lifted from
+the committed brapi response, re-stamped onto the session-open convention the store uses, with
+expected values from `testdata/indicators_reference.py` — a second implementation written from the
+textbook definitions, in another language, so a formula misremembered in Go has to be misremembered
+identically in Python to survive. It is committed next to what it generates because Phase 6 adds
+thirty more indicators to the same file; regenerating is `python3 testdata/indicators_reference.py`
+from the repo root. `TestGoldenValuesSurviveAHandCheck` computes an SMA(5) and a BB(5,2) from the
+first five bars by hand in the test, which is what the reference itself is checked against.
+
+**The priming property is tested on 2,000 synthetic bars, not on the 200 real ones.** The fixture is
+too short to prove anything about a 280-bar prime window — the window reaches the start of history
+and the comparison becomes trivially exact. The synthetic walk comes from an inline LCG rather than
+`math/rand`, which keeps it deterministic across Go versions and keeps gosec's G404 out of it.
+
+**`indicator.Candle` carries `float64` volume and no `adj_close`, and the package imports nothing.**
+`market.Candle` stores volume as `int64` and an optional adjusted close; the plan's indicator struct
+is plain float64s. Keeping them separate is what lets `internal/indicator` stay a pure computation
+package with no database, no calendar and no market types in it — testable entirely from a JSON
+fixture. The conversion is one loop at the API boundary, and Phase 9 will need the same loop.
+
+> **Status: done and verified end to end.** `make check` is clean — `gofmt`, `go vet ./...`,
+> `staticcheck ./...`, `gosec -exclude-generated ./...`, `go test ./...` and the frontend
+> type-check — and the phase's done-when was exercised over HTTP against the running stack:
+>
+> ```
+> curl -s 'localhost:8080/api/v1/candles?symbol=PETR4&timeframe=1d&limit=60&indicators=ema:9,ema:21,rsi:14' | jq '.count, [.indicators[] | {key, start: .series[0].start, n: (.series[0].values | length)}]'
+> ```
+>
+> 60 candles, three indicator bodies, every `start` 0 and every series 60 values long — which is the
+> answer priming is supposed to give: 60 bars of daily PETR4 sit well inside the 168 bars `ema:21`
+> reads before the window, so the page carries no warmup hole at all. Without priming the same
+> request would have returned `ema:21` starting at bar 20.
+>
+> The offline suite covers the rest: the golden values for nine cases (`sma:5`, `sma:20`, `ema:9`,
+> `ema:21`, `ema:9:source=hl2`, `rsi:14`, `rsi:2`, `macd:12:26:9`, `bb:20:2`) to 6 decimals against
+> the Python reference; the warmup convention and the `Ready()` walk across every registered
+> indicator; that `Reset` makes an indicator reusable and that streaming equals `Compute`; the
+> priming table above plus a control showing an unprimed page is visibly wrong; the ring, the
+> sliding variance and Wilder's seed; every parse and canonicalisation path; and at the API layer,
+> every 400, the alignment of series against candles, the empty-series encoding, and that the body
+> omits `indicators` entirely when none were asked for.
+>
+> **The phase added no SQL.** `Prime` reuses `ListCandlesDesc` with a zero lower bound, so there was
+> no `make sqlc` and no migration between Phase 4 and here — the only phase so far that touches the
+> read path without touching the schema.
+>
+> Carried into later phases, deliberately:
+> - **`GET /api/v1/indicators` does not exist yet.** `indicator.Catalog()` is what it will serve and
+>   error messages list the names in the meantime; the endpoint is Phase 6's done-when.
+> - **Nothing draws them.** Phase 7 owns the picker, the panes and the per-indicator colours; the
+>   response already carries `overlay` so the client never has to hardcode which pane an indicator
+>   belongs in.
+> - **Indicators run on raw prices, not `adj_close`.** They see exactly what the chart draws, so a
+>   split inside the window bends every moving average the same way it bends the candles. Phase 9
+>   decides which series a *backtest* runs on, and the chart should follow that answer rather than
+>   lead it — Phase 3's carry-over, unchanged.
+> - **The one-day `immutable` cache now covers indicator values too**, and those depend on bars
+>   *before* the page. A backfill that fills a hole inside the prime window changes the values for a
+>   URL a browser may already hold. Bounded to a day, same as the candles themselves, and the same
+>   reason Phase 3 capped it there rather than at a year.
+> - **Computed series are not cached server-side.** Priming adds a second query per request that asks
+>   for indicators, and the fold plus the indicator walk run every time. Still waiting on profiling,
+>   as with the resampler.
+> - **An `Instance` holds a live indicator**, so it is single-use per request. Phase 8's strategy
+>   compiler must build its own instances rather than reusing parsed ones across runs.
+> - **Every indicator registered so far takes a `source`.** Phase 6 adds ones that read several price
+>   fields at once — ATR, OBV, MFI, the whole volume group — and those must register with
+>   `Sourced: false` so the framework rejects `atr:14:source=hl2` instead of silently ignoring it.
+> - **Eight indicators per request, periods capped at 2,000.** Both are arbitrary but bounded; the
+>   period cap is what stops `ema:100000` from allocating a ring nobody asked for.
 
 ---
 
@@ -1034,11 +1196,24 @@ the golden tests pass.
 - [ ] **Volatility:** ATR, StdDev, Historical Volatility, Chaikin Volatility
 - [ ] **Volume:** OBV, MFI, A/D Line, Chaikin Oscillator, Volume MA, VWMA
 - [ ] **Structure:** Pivot Points (classic/Fibonacci), Williams Fractals, ZigZag
-- [ ] Wilder's smoothing is its own helper — RSI, ATR and ADX all use it and all get it subtly
-      wrong independently otherwise
+- [x] Wilder's smoothing is its own helper — RSI, ATR and ADX all use it and all get it subtly
+      wrong independently otherwise *(landed in Phase 5, in `internal/indicator/smooth.go`, because
+      RSI needed it there. ATR and ADX pick it up unchanged — and both should declare
+      `PrimeBars() = period * wilderPrimeFactor` the way RSI does, or a paged chart will hand back
+      values that disagree with a full-history run)*
 
 **Done when:** every registered indicator has golden tests, and `GET /api/v1/indicators` lists the
 catalogue with parameter schemas.
+
+> The registry already carries everything that endpoint has to serve — name, title, group, overlay
+> flag, parameter schema with ranges and defaults, output names — so `GET /api/v1/indicators` is a
+> handler over `indicator.Catalog()` rather than a new data model. Extending the golden fixtures is
+> `python3 testdata/indicators_reference.py` after adding the reference formula to it; the fixture
+> file is keyed by canonical indicator key, so new cases append without disturbing the existing ones.
+> Two registration flags matter for this batch: the volume and true-range indicators (ATR, OBV, MFI,
+> A/D, VWAP, Keltner, SuperTrend, the Donchian/Ichimoku structure group) read several price fields at
+> once and must register `Sourced: false`, and anything drawn against price rather than in its own
+> pane needs `Overlay: true` — Phase 7 reads that flag instead of hardcoding a list.
 
 ---
 

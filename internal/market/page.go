@@ -34,6 +34,13 @@ type Page struct {
 	HasMore   bool
 }
 
+func (p Page) Oldest() time.Time {
+	if len(p.Candles) == 0 {
+		return time.Time{}
+	}
+	return p.Candles[0].TS
+}
+
 func ClampPageLimit(limit int) int {
 	switch {
 	case limit < 1:
