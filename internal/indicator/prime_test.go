@@ -43,7 +43,16 @@ func TestPrimingReproducesWhatFullHistoryWouldHaveComputed(t *testing.T) {
 	candles := syntheticWalk(2000)
 	split := len(candles) / 2
 
-	for _, key := range []string{"sma:20", "sma:200", "ema:9", "ema:21", "rsi:14", "rsi:2", "macd:12:26:9", "bb:20:2"} {
+	keys := []string{
+		"sma:20", "sma:200", "ema:9", "ema:21", "rsi:14", "rsi:2", "macd:12:26:9", "bb:20:2",
+		"wma:20", "hma:9", "dema:20", "tema:20", "vwap:20", "keltner:20:2:10", "donchian:20",
+		"psar:0.02:0.2", "supertrend:10:3", "ichimoku:9:26:52:26",
+		"stoch:14:3:3", "stochrsi:14:14:3:3", "cci:20", "willr:14", "roc:12", "mom:10",
+		"adx:14", "aroon:25", "atr:14", "stddev:20", "hv:20:252", "cvol:10:10",
+		"mfi:14", "volma:20", "vwma:20", "pivots:1", "fibpivots:1", "fractals:2",
+	}
+
+	for _, key := range keys {
 		t.Run(key, func(t *testing.T) {
 			instance, err := Parse(key)
 			if err != nil {
@@ -82,6 +91,34 @@ func TestPrimingReproducesWhatFullHistoryWouldHaveComputed(t *testing.T) {
 			t.Logf("primed with %d bars, worst disagreement %g", depth, worst)
 		})
 	}
+}
+
+func TestPrimingACumulativeSeriesLandsWithinAFractionOfItsScale(t *testing.T) {
+	candles := syntheticWalk(2000)
+	split := len(candles) / 2
+
+	instance, err := Parse("chaikin:3:10")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	depth := PrimeBars([]Instance{instance})
+	full := Compute(instance.Indicator, candles)
+	instance.Indicator.Reset()
+	Feed(instance.Indicator, candles[split-depth:split])
+	paged := Emit(instance.Indicator, candles[split:])
+
+	scale, worst := 0.0, 0.0
+	for i, value := range paged.Values[0] {
+		want := full.Values[0][split-full.Start+i]
+		scale = math.Max(scale, math.Abs(want))
+		worst = math.Max(worst, math.Abs(value-want))
+	}
+
+	if worst > 1e-4*scale {
+		t.Errorf("priming with %d bars leaves the oscillator off by %g against a swing of %g", depth, worst, scale)
+	}
+	t.Logf("primed with %d bars, worst disagreement %g against a swing of %g", depth, worst, scale)
 }
 
 func TestAnUnprimedPageIsVisiblyWrong(t *testing.T) {

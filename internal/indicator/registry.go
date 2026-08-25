@@ -25,6 +25,10 @@ const (
 	GroupStructure  Group = "structure"
 )
 
+var Groups = []Group{GroupOverlay, GroupMomentum, GroupVolatility, GroupVolume, GroupStructure}
+
+func (g Group) String() string { return string(g) }
+
 type Param struct {
 	Name    string
 	Kind    ParamKind

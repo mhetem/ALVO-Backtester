@@ -7,13 +7,24 @@ import (
 )
 
 const (
-	sourceParam  = "source"
-	MaxInstances = 8
-	MaxPrimeBars = 5000
+	sourceParam   = "source"
+	MaxInstances  = 8
+	MaxPrimeBars  = 5000
+	pathPrimeBars = 250
 )
 
 type Primer interface {
 	PrimeBars() int
+}
+
+type Anchorer interface {
+	Anchor()
+}
+
+func Anchor(ind Indicator) {
+	if anchorer, ok := ind.(Anchorer); ok {
+		anchorer.Anchor()
+	}
 }
 
 type Instance struct {

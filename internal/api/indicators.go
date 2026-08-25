@@ -49,6 +49,7 @@ func computeIndicators(instances []indicator.Instance, prime, page []market.Cand
 	for _, instance := range instances {
 		instance.Indicator.Reset()
 		indicator.Feed(instance.Indicator, warmup)
+		indicator.Anchor(instance.Indicator)
 		result := indicator.Emit(instance.Indicator, bars)
 
 		body := indicatorBody{

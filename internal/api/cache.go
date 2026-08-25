@@ -13,6 +13,7 @@ const (
 	cacheClosedRange = "public, max-age=86400, immutable"
 	cacheOpenRange   = "no-cache"
 	cacheSymbols     = "public, max-age=300"
+	cacheCatalog     = "public, max-age=3600"
 )
 
 func respondCached(w http.ResponseWriter, r *http.Request, payload any, cacheControl string) {

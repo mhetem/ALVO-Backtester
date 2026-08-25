@@ -22,6 +22,17 @@ func TestParseCanonicalisesEveryWayOfSpellingTheSameIndicator(t *testing.T) {
 		{"ema:9:source=hl2", "ema:9:source=hl2"},
 		{"ema:9:source=close", "ema:9"},
 		{"rsi:14", "rsi:14"},
+		{"atr", "atr:14"},
+		{"stoch", "stoch:14:3:3"},
+		{"stoch:k=14:d=3:smooth=3", "stoch:14:3:3"},
+		{"psar", "psar:0.02:0.2"},
+		{"obv", "obv"},
+		{"OBV", "obv"},
+		{"ichimoku", "ichimoku:9:26:52:26"},
+		{"keltner:20:2:10", "keltner:20:2:10"},
+		{"supertrend:10:3", "supertrend:10:3"},
+		{"zigzag:2.5", "zigzag:2.5"},
+		{"vwma:20:source=hlc3", "vwma:20:source=hlc3"},
 	}
 
 	for _, tc := range cases {
@@ -54,6 +65,13 @@ func TestParseRejectsWhatTheRegistryCannotBuild(t *testing.T) {
 		{"ema:9:decay=0.5", `ema has no parameter "decay"`},
 		{"macd:26:12:9", "fast must be shorter than slow"},
 		{"bb:20:0", "mult must be between 0.1 and 10"},
+		{"atr:14:source=hl2", "atr does not take a source"},
+		{"obv:5", "obv takes no parameters"},
+		{"supertrend:10:0", "mult must be between 0.1 and 20"},
+		{"chaikin:10:3", "fast must be shorter than slow"},
+		{"psar:0.5:0.1", "step must not exceed max"},
+		{"ichimoku:9:26:52:26:1", "ichimoku takes 4 parameters"},
+		{"aroon:period=25:span=3", `aroon has no parameter "span"`},
 	}
 
 	for _, tc := range cases {
@@ -146,11 +164,24 @@ func TestPrimeBarsClearsEveryRequestedWarmup(t *testing.T) {
 
 func TestOnlyRecursiveIndicatorsAskForMoreThanTheirWarmup(t *testing.T) {
 	cases := map[string]bool{
-		"sma:200":      false,
-		"bb:20:2":      false,
-		"ema:9":        true,
-		"rsi:14":       true,
-		"macd:12:26:9": true,
+		"sma:200":             false,
+		"bb:20:2":             false,
+		"ema:9":               true,
+		"rsi:14":              true,
+		"macd:12:26:9":        true,
+		"wma:20":              false,
+		"donchian:20":         false,
+		"stoch:14:3:3":        false,
+		"ichimoku:9:26:52:26": false,
+		"aroon:25":            false,
+		"atr:14":              true,
+		"adx:14":              true,
+		"dema:20":             true,
+		"keltner:20:2:10":     true,
+		"supertrend:10:3":     true,
+		"psar:0.02:0.2":       true,
+		"chaikin:3:10":        true,
+		"stochrsi:14:14:3:3":  true,
 	}
 
 	for key, recursive := range cases {

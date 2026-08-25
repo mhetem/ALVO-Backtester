@@ -26,6 +26,16 @@ func (r *ring) push(value float64) float64 {
 
 func (r *ring) len() int { return r.count }
 
+func (r *ring) at(i int) float64 {
+	if i < 0 || i >= r.count {
+		return 0
+	}
+	start := (r.next - r.count + len(r.values)) % len(r.values)
+	return r.values[(start+i)%len(r.values)]
+}
+
+func (r *ring) sum() float64 { return r.total }
+
 func (r *ring) full() bool { return r.count == len(r.values) }
 
 func (r *ring) mean() float64 {

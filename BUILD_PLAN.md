@@ -1191,11 +1191,11 @@ fixture. The conversion is one loop at the API boundary, and Phase 9 will need t
 
 **Goal:** breadth. Each is one file, one test file, registered.
 
-- [ ] **Overlays:** WMA, HMA, DEMA, TEMA, VWAP, Keltner, Donchian, Parabolic SAR, SuperTrend, Ichimoku
-- [ ] **Momentum:** Stochastic, Stochastic RSI, CCI, Williams %R, ROC, Momentum, ADX/+DI/−DI, Aroon
-- [ ] **Volatility:** ATR, StdDev, Historical Volatility, Chaikin Volatility
-- [ ] **Volume:** OBV, MFI, A/D Line, Chaikin Oscillator, Volume MA, VWMA
-- [ ] **Structure:** Pivot Points (classic/Fibonacci), Williams Fractals, ZigZag
+- [x] **Overlays:** WMA, HMA, DEMA, TEMA, VWAP, Keltner, Donchian, Parabolic SAR, SuperTrend, Ichimoku
+- [x] **Momentum:** Stochastic, Stochastic RSI, CCI, Williams %R, ROC, Momentum, ADX/+DI/−DI, Aroon
+- [x] **Volatility:** ATR, StdDev, Historical Volatility, Chaikin Volatility
+- [x] **Volume:** OBV, MFI, A/D Line, Chaikin Oscillator, Volume MA, VWMA
+- [x] **Structure:** Pivot Points (classic/Fibonacci), Williams Fractals, ZigZag
 - [x] Wilder's smoothing is its own helper — RSI, ATR and ADX all use it and all get it subtly
       wrong independently otherwise *(landed in Phase 5, in `internal/indicator/smooth.go`, because
       RSI needed it there. ATR and ADX pick it up unchanged — and both should declare
@@ -1214,6 +1214,195 @@ catalogue with parameter schemas.
 > A/D, VWAP, Keltner, SuperTrend, the Donchian/Ichimoku structure group) read several price fields at
 > once and must register `Sourced: false`, and anything drawn against price rather than in its own
 > pane needs `Overlay: true` — Phase 7 reads that flag instead of hardcoding a list.
+
+### Decisions this phase forced
+
+**Thirty-two registrations, not thirty-one — `method` is not a parameter kind.** The plan lists
+"Pivot Points (classic/Fibonacci)" as one line, but `Param` only carries `int` and `float`, so a
+`method` selector would have to be an integer enum in a URL — `pivots:1:1` meaning "Fibonacci" is
+unreadable and unvalidatable. They register as two names, `pivots` and `fibpivots`, which is what
+the picker wants anyway: two entries with the same parameter schema and the same seven outputs
+rather than one entry with a magic number.
+
+**Two files per indicator would be two files of nothing.** The plan asks for "one file, one test
+file" and gets the first half: each indicator is its own file, thirty-one of them for thirty-two
+registrations. The second half would be thirty-two test files that all assert what
+`indicator_golden.json` already asserts, which
+is the shape Phase 5 already rejected — SMA and EMA have no `sma_test.go` either. Correctness per
+indicator lives in the golden fixture; the test files are grouped by the plan's own five groups and
+hold only what a fixture cannot state — that a bounded oscillator stays inside its bounds, that
+Keltner's midline *is* an EMA(20), that Aroon pins to 100/0 on a monotone run, that the pivot ladder
+comes out in order. `TestEveryGoldenCaseNamesADistinctIndicator` fails the build if a new
+registration arrives without a golden case, which is the guarantee the "one test file" rule was
+reaching for.
+
+**Session VWAP does not exist yet, and the honest name for what does is "rolling".** Every trader
+means *session-anchored* VWAP, and `internal/indicator` cannot compute one: the package deliberately
+imports nothing — no calendar, no exchange timezone — so it cannot tell where a session starts. A
+cumulative-from-the-first-bar VWAP would have been worse than useless under paging, because the
+anchor would move every time the chart panned. So `vwap:20` is a rolling window over the typical
+price, titled "Rolling VWAP" so nobody reads it as the other thing, and the anchored version waits
+for a phase that can hand the indicator a session boundary. It is a real distinction from `vwma`,
+which weights a *chosen source* by volume; `vwap` always reads `hlc3` and registers `Sourced: false`.
+
+**OBV and the A/D Line are cumulative, so the framework had to grow an `Anchor()`.** Their level
+depends on where the accumulation started, which under paging is "wherever the deepest indicator in
+the same request happened to prime to" — so `?indicators=obv` and `?indicators=obv,ema:200` would
+return different OBV levels for exactly the same bars, at a URL cached `immutable` for a day. The
+optional `Anchorer` interface fixes the zero at the page boundary: `computeIndicators` calls
+`Anchor()` between the prime feed and the emit, the accumulator resets to zero while the previous
+close is kept, and the emitted series depends only on the page. The consequence, stated plainly:
+OBV and A/D levels are *not* comparable across pages — slope and divergence are what they mean, and
+Phase 7 should scale their pane per view rather than pinning a zero line. The Chaikin Oscillator
+deliberately does *not* anchor: it is a difference of two EMAs of the same accumulator, so a
+constant offset cancels, and anchoring mid-stream would leave its EMAs holding a level its input no
+longer has. `TestTheCumulativeSeriesAnchorAtThePageAndTheOthersDoNot` pins exactly which two
+indicators implement the interface.
+
+**Ichimoku emits the cloud already shifted, and drops Chikou.** Senkou A and B are drawn 26 bars
+*ahead* of the bar that computes them, which a streaming indicator emitting one row per bar cannot
+do at the right-hand edge — the last 26 bars of cloud extend past the last candle and there is no
+bar to hang them on. What it can do is emit, at bar `i`, the value computed at bar `i-26`, so the
+client draws all four series against the candle they belong to with no client-side shifting. Chikou
+is the close shifted 26 bars *back*, which needs lookahead to emit and carries no information the
+client does not already have in `c[]`; it is not an output. The cost is the leading edge of the
+cloud, which Phase 7 can extrapolate from `senkou_a`/`senkou_b` if it wants it.
+
+**Williams Fractals and ZigZag are step lines, because "no value here" is not expressible.** Phase 5
+decided values before `Ready()` are not emitted — not zero, not NaN — and the same rule applied
+inside a series means a fractal indicator cannot emit "nothing" on the 96% of bars that are not
+fractals. Both therefore emit a level that is always defined and steps when the structure does:
+`fractals` carries the last confirmed pivot high and low, seeded at the first full window with that
+window's extremes; `zigzag` carries the running extreme of the current leg plus a `direction` of
++1/-1/0. `TestFractalsStepOnlyOntoAConfirmedPivot` checks every step lands on a bar whose
+neighbours are strictly lower, which is the property the step line is standing in for.
+
+**ZigZag whipsaws when a single bar's own range exceeds the deviation, and that is the indicator
+being right.** The leg extreme absorbs the current bar's high before the retracement is measured
+against the same bar's low, so a bar spanning 9.5% of its price reverses a 5% ZigZag every bar. The
+first test fixture walked into exactly that — a ramp starting at price 10 with a fixed 1.0 bar range
+— and reported 20 reversals over one peak. The fixture was wrong, not the indicator: `tentRamp` now
+takes a base price so the bar range is a fraction of it. The property is worth knowing before Phase
+7 puts a deviation control in front of anyone, because BR equities run 2–4% daily ranges and a
+ZigZag set much below that will draw noise rather than structure.
+
+**Pivot points are computed over the previous `period` bars, not the previous session.** Same
+constraint as VWAP: the package has no calendar. `pivots:1` on a daily chart is therefore the
+classic daily pivot exactly, `pivots:5` is a usable weekly one, and on intraday bars it is pivots
+over the previous `period` bars rather than over yesterday's session — which the parameter name
+makes visible instead of pretending otherwise.
+
+**Rolling max and min needed their own structure, and it is not a ring.** Donchian, Stochastic,
+Williams %R, Aroon and Ichimoku all want "the highest high of the last n bars" per bar, and a ring
+only carries a running sum. `extreme` is a monotonic deque over a fixed ring of `size` slots: each
+push evicts the out-of-window head first, then pops every tail the new value dominates, so it is
+O(1) amortised with no allocation per bar. It also carries the *age* of the current extreme, which
+is the whole of Aroon — and the tie rule matters there, so the deque pops on `<=` and the most
+recent occurrence of a repeated high wins, matching TA-Lib.
+`TestTheRollingExtremeMatchesAScanOfTheWindow` pins value and age against a scan of the same window
+over 500 bars at four window sizes, including the monotone run that makes a naive deque overflow.
+
+**CCI is the one O(n) indicator, because mean absolute deviation has no sliding form.** Bollinger's
+standard deviation slides in constant time because Σ(x-μ)² telescopes; Σ|x-μ| does not — evicting a
+value can flip the sign of every remaining term. So CCI walks its window each bar, which is what
+TA-Lib does too, and `ring.at(i)` exists for it. At period 20 that is 20 subtractions per bar
+against a database round-trip per request; it is not the thing to optimise.
+
+**WMA slides in constant time and drifts, which is fine and worth saying.** The O(1) update is
+`numerator += period*x - sum_before`, which reuses the ring's running total and never re-walks the
+window — but it is an accumulator, so error compounds over a long stream instead of being bounded by
+the window. `TestTheSlidingWeightedAverageMatchesTheNaiveComputation` recomputes the same window
+from scratch over 1,000 bars and requires agreement to 1e-9; the golden tolerance is 1e-6 and a
+centavo is 1e-2. HMA nests three WMAs behind it.
+
+**The same sliding sum let a bounded oscillator leave its bounds, so the bounded ones clamp at
+emit.** `ring.mean()` divides a running total that is maintained by add-and-evict, so it carries
+drift the window does not: three raw %K values of *exactly* 100 summed to 300.0000000000001, and
+Stochastic RSI emitted 100.00000000000004. The raw percentage itself is exact — when the close is
+the window high, `(close-low)/(high-low)` is the same subtraction over itself and divides to exactly
+1 — so the escape is entirely the smoothing, and 4e-14 is nothing to a chart but it is a lie about
+the indicator's range and it breaks any rule written as `k >= 100`. `stoch`, `stochrsi` and `mfi`
+clamp to 0..100 on the way out. MFI is in that list for the same reason rather than a measured
+failure: its money-flow sums are the same kind of running total, and a window whose positive flows
+have all rolled out leaves a residue instead of an exact zero, which turns the ratio very slightly
+negative. RSI, ADX and Aroon need no clamp and got none — Wilder's update is a convex combination
+of values already inside the range, and Aroon divides two exact integers.
+
+**Priming: eight new `PrimeBars()` overrides, and one indicator that cannot honestly have one.** The
+Phase 5 rule holds — an indicator with a finite window primes exactly its warmup, one that carries
+state past it says so. The Wilder family (ATR, ADX, SuperTrend, and Stochastic RSI through its RSI)
+asks for 16× as RSI does; the EMA family (DEMA, TEMA, Keltner, Chaikin Volatility, Chaikin
+Oscillator) asks for 8×. `TestPrimingReproducesWhatFullHistoryWouldHaveComputed` now runs 36 keys
+and requires every one to land inside half a centavo of what full history would have drawn.
+
+Three indicators are *path-dependent* rather than convergent: Parabolic SAR, SuperTrend and ZigZag
+carry a trend flag that only a reversal clears, so no prime depth is provably enough — it is enough
+once it reaches back past a flip. They declare a flat 250 bars, which should reach back past
+several flips for SAR and SuperTrend on the test walk, and both are in the priming table.
+**ZigZag is not**, and that
+is the honest reason: a 5% leg on that walk takes ~170 bars, so 250 bars is one or two legs and a
+page can genuinely start mid-leg with a different anchor than full history would have had. A panned
+chart may redraw a ZigZag leg. Every other indicator in the library will not.
+
+**Chaikin Oscillator is compared relatively, because half a centavo means nothing to a volume
+series.** Priming it is a cumulative line under two EMAs: the constant offset cancels, but the
+EMA(10) seeded 80 bars back still carries a residue proportional to the *A/D line's* magnitude,
+which runs in the tens of millions. The absolute half-tick bound that governs price series is the
+wrong instrument, so its priming test asserts the disagreement is under 1e-4 of the oscillator's own
+swing. The golden comparison hit the same wall from the other side — OBV and A/D values sit around
+1e10, where 1e-6 absolute is below float64 resolution — so `within()` is now
+`|got-want| <= 1e-6 * max(1, |want|)`: unchanged at 1e-6 absolute for anything price-sized, relative
+above that.
+
+**The reference stayed Python and grew the whole new library, but two of its formulas are
+transcriptions and say so.** Everything with a textbook definition is written from the definition,
+in another language, so
+a formula misremembered in Go has to be misremembered identically in Python to survive — that is
+what the second implementation is for. Parabolic SAR and ZigZag have no closed form; they are
+sequential state machines, and the Python is a line-by-line transcription of the Go rather than an
+independent derivation. It still catches transcription slips and pins the values against future
+edits, but it is not the same evidence the other thirty registrations carry.
+
+**`GET /api/v1/indicators` serves the registry plus what the picker cannot derive.** Name, title,
+group, overlay flag, `sourced` flag, parameter schema with kind/default/min/max, output names — all
+straight off `Spec`. Two additions earn their place: the canonical `key` built from the defaults, so
+the picker has a working request string for every entry without knowing the encoding, and `warmup`
+for the same instance, so it can say how much history a choice costs before the user makes it. The
+body also carries `groups`, `sources` and `max_per_request` so the whole form is drivable from one
+response. Cached an hour — it changes only when the binary does.
+
+> **Status: one run of `internal/indicator`, two failures, both fixed — the fixes not yet re-run.**
+> The failures were Stochastic RSI emitting 100.00000000000004 and ZigZag reversing 20 times over one
+> peak; both are written up above, the first a change to the library and the second a change to the
+> fixture. Nothing else in the package failed, which means the generator had already run and the
+> golden comparison passed on all 44 cases — thirty-two new indicators agreeing with a second
+> implementation in another language to 6 decimals across 200 real PETR4 bars, on the first attempt.
+>
+> Still to run:
+>
+> ```
+> python3 testdata/indicators_reference.py     # only if indicator_golden.json is not already current
+> make check
+> ```
+>
+> The generator appends 35 cases keyed by canonical indicator key — 44 in all — and rewrites
+> `indicator_bars.json` byte-identically from the same committed brapi response. `vet`,
+> `staticcheck`, `gosec` and the frontend type-check have not been run against this phase at all.
+>
+> Carried into later phases, deliberately:
+> - **Nothing draws any of it.** Phase 7 owns the picker, the panes and the colours; every catalogue
+>   entry already carries the `overlay` flag and output names it needs.
+> - **`direction` outputs are ±1 series, not markers.** SuperTrend, Parabolic SAR and ZigZag each
+>   emit one. They plot as a step line; Phase 7 may want them as candle colouring instead, and
+>   Phase 8 will read them as a signal.
+> - **Session-anchored VWAP and session pivots wait on a calendar-aware indicator input.** Both are
+>   listed above as the reason the current shapes are what they are.
+> - **Ichimoku's leading edge is not emitted.** The 26 bars of cloud that extend past the last candle
+>   have no bar to attach to in a per-bar series.
+> - **A ZigZag leg can redraw when the chart pans.** Documented above rather than hidden behind a
+>   prime depth that would only look like a fix.
+> - **Still no server-side cache of computed series.** Thirty-two indicators do not change that
+>   answer; the resampler and the indicator walk are both still waiting on profiling.
 
 ---
 

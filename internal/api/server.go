@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/healthz", s.handleHealthz)
 	mux.HandleFunc("GET /api/v1/symbols", s.handleSymbols)
 	mux.HandleFunc("GET /api/v1/candles", s.handleCandles)
+	mux.HandleFunc("GET /api/v1/indicators", s.handleIndicators)
 
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)

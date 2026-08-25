@@ -11,6 +11,10 @@ import (
 
 const tolerance = 1e-6
 
+func within(got, want float64) bool {
+	return math.Abs(got-want) <= tolerance*math.Max(1, math.Abs(want))
+}
+
 type fixtureCandle struct {
 	TS     string  `json:"ts"`
 	Open   float64 `json:"open"`
@@ -122,7 +126,7 @@ func TestGoldenValuesMatchTheReferenceImplementation(t *testing.T) {
 					t.Fatalf("%s has %d values, want %d", name, len(got), len(want))
 				}
 				for j := range want {
-					if math.Abs(got[j]-want[j]) > tolerance {
+					if !within(got[j], want[j]) {
 						t.Errorf("%s[%d] = %.9f, want %.6f (bar %s)",
 							name, j, got[j], want[j], candles[tc.Start+j].TS.Format(time.DateOnly))
 					}
@@ -160,7 +164,7 @@ func TestGoldenValuesSurviveAHandCheck(t *testing.T) {
 	if first.Start != 4 {
 		t.Fatalf("sma:5 emits from index %d over five bars, want 4", first.Start)
 	}
-	if got := first.Values[0][0]; math.Abs(got-mean) > tolerance {
+	if got := first.Values[0][0]; !within(got, mean) {
 		t.Errorf("sma:5 over the first five bars is %.9f, want %.9f", got, mean)
 	}
 
@@ -170,7 +174,7 @@ func TestGoldenValuesSurviveAHandCheck(t *testing.T) {
 	}
 	banded := Compute(bands.Indicator, candles[:5])
 	for i, want := range []float64{mean + 2*spread, mean, mean - 2*spread} {
-		if got := banded.Values[i][0]; math.Abs(got-want) > tolerance {
+		if got := banded.Values[i][0]; !within(got, want) {
 			t.Errorf("bb:5:2 %s is %.9f, want %.9f", bands.Spec.Outputs[i], got, want)
 		}
 	}
