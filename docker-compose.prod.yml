@@ -1,5 +1,24 @@
 services:
   db:
+    shm_size: 256m
+    command:
+      - postgres
+      - -c
+      - shared_buffers=384MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=50
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_compression=on
     deploy:
       resources:
         limits:
@@ -10,6 +29,10 @@ services:
     ports: !override []
     expose:
       - "8080"
+    environment:
+      TRUST_PROXY: "true"
+      GOMEMLIMIT: 900MiB
+      GOMAXPROCS: "2"
     deploy:
       resources:
         limits:

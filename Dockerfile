@@ -24,4 +24,6 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 COPY --from=build /alvo /alvo
 EXPOSE 8080
 USER nonroot:nonroot
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/alvo", "healthcheck"]
 ENTRYPOINT ["/alvo"]

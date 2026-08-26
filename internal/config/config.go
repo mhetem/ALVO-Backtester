@@ -21,6 +21,7 @@ type Config struct {
 	BrapiToken     string
 	JWTSecret      string
 	Platform       string
+	TrustProxy     bool
 	IngestEnabled  bool
 	IngestIntraday bool
 	IngestFutures  bool
@@ -43,6 +44,9 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	if cfg.TrustProxy, err = envBool("TRUST_PROXY", false); err != nil {
+		return Config{}, err
+	}
 	if cfg.IngestEnabled, err = envBool("INGEST_ENABLED", false); err != nil {
 		return Config{}, err
 	}

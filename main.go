@@ -25,7 +25,7 @@ const (
 	shutdownTimeout = 15 * time.Second
 )
 
-var commands = []string{"serve", "sync-symbols", "backfill", "sync-candles", "sync-futures", "gaps", "candles"}
+var commands = []string{"serve", "healthcheck", "sync-symbols", "backfill", "sync-candles", "sync-futures", "gaps", "candles"}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -54,6 +54,8 @@ func run(args []string) error {
 	switch command {
 	case "serve":
 		return runServe(ctx, cfg, log)
+	case "healthcheck":
+		return runHealthcheck(ctx, cfg, log, args)
 	case "sync-symbols":
 		return runSyncSymbols(ctx, cfg, log, args)
 	case "backfill":

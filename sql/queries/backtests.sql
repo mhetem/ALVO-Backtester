@@ -125,3 +125,8 @@ FROM (
 ) points
 WHERE (n - 1) % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 0 OR n = total
 ORDER BY ts;
+
+-- name: CountBacktestRunsByStatus :many
+SELECT status, COUNT(*) AS runs FROM backtest_runs
+WHERE status IN ('queued', 'running')
+GROUP BY status;

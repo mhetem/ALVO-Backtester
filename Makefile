@@ -4,7 +4,7 @@ COMPOSE_PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml
 SQLC_IMAGE   := sqlc/sqlc:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols backfill sync-candles sync-futures gaps candles build test vet lint sec fmt fmt-check check check-frontend frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
+.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols backfill sync-candles sync-futures gaps candles backup build test vet lint sec fmt fmt-check check check-frontend frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
 
 help:
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -58,6 +58,9 @@ gaps: ## Report missing sessions against the trading calendar. ARGS="--symbol PE
 
 candles: ## Print candles at any timeframe, resampling 15m/30m/1h from 5m on read. ARGS="--symbol PETR4 --timeframe 1h"
 	$(RUN) candles $(ARGS)
+
+backup: ## Dump the database and upload it to BACKUP_REMOTE via rclone
+	./scripts/backup.sh
 
 frontend: ## Build the Svelte app into frontend/dist
 	cd frontend && npm ci && npm run build

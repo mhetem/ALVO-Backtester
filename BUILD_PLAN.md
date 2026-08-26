@@ -2883,31 +2883,92 @@ on a named volume, and the backup story below is what makes that safe.
 
 - [ ] Try Oracle first; it's free and it's in Brazil. Keep Hetzner as the fallback for when A1
       capacity won't provision
-- [ ] **Both are ARM**, which makes the `linux/arm64` build load-bearing rather than a nicety
-- [ ] Multi-arch image build (`linux/amd64`, `linux/arm64`) via buildx in CI, pushed to GHCR on tag
-- [ ] `docker-compose.prod.yml`: adds **Caddy** as the only published service, reverse-proxying the
+- [x] **Both are ARM**, which makes the `linux/arm64` build load-bearing rather than a nicety
+- [x] Multi-arch image build (`linux/amd64`, `linux/arm64`) via buildx in CI, pushed to GHCR on tag
+- [x] `docker-compose.prod.yml`: adds **Caddy** as the only published service, reverse-proxying the
       app. Automatic Let's Encrypt TLS from a two-line Caddyfile — the app still serves the SPA
       itself, Caddy only terminates HTTPS
-- [ ] `restart: unless-stopped` on every service; memory limits so a runaway backtest can't OOM
+- [x] `restart: unless-stopped` on every service; memory limits so a runaway backtest can't OOM
       Postgres
-- [ ] Postgres tuning for a small box: `shared_buffers`, `work_mem`, `effective_cache_size` set
+- [x] Postgres tuning for a small box: `shared_buffers`, `work_mem`, `effective_cache_size` set
       explicitly. Defaults assume far more RAM than 4 GB
-- [ ] **Backups.** Nightly `pg_dump | gzip` to object storage (Cloudflare R2 / Backblaze B2, both
+- [x] **Backups.** Nightly `pg_dump | gzip` to object storage (Cloudflare R2 / Backblaze B2, both
       effectively free at this size). Test a restore *once*, for real. The candle store is ~4 GB
       that cost a month of Pro to acquire
-- [ ] `HEALTHCHECK` hitting `/healthz` — a distroless image has no `curl`, so this is an
+- [x] `HEALTHCHECK` hitting `/healthz` — a distroless image has no `curl`, so this is an
       `/alvo healthcheck` subcommand hitting itself
-- [ ] Graceful shutdown on SIGTERM: stop accepting, drain in-flight requests, mark running
+- [x] Graceful shutdown on SIGTERM: stop accepting, drain in-flight requests, mark running
       backtests back to `queued`. Docker sends SIGTERM and waits 10s — an orphaned `running` row
       that no worker owns is a job that never finishes
-- [ ] Per-IP and per-user rate limiting on the API
-- [ ] Response caching for hot candle ranges
-- [ ] Metrics + `pprof` behind auth
-- [ ] Backtest timeout + memory ceiling per run
+- [x] Per-IP and per-user rate limiting on the API
+- [x] Response caching for hot candle ranges
+- [x] Metrics + `pprof` behind auth
+- [x] Backtest timeout + memory ceiling per run
 - [ ] Pin base images by digest once the build is stable
+- [ ] **Move the candle store to the box.** Not in the original list, and the one step that has no
+      undo: the store is in this machine's `alvo_pgdata` volume. `pg_dump -Fc` out, `pg_restore`
+      into an *empty* database on the box, and only then start the app. The app runs goose on
+      startup, so an app that boots first migrates the schema and the restore then collides with
+      tables that already exist. Restored first, the dump carries `goose_db_version` at 18 and
+      goose correctly does nothing
+- [ ] Prove a restore from object storage, not from the disk the dump was written on
 
 **Done when:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` on a fresh
 box serves the app over HTTPS, and a restore from last night's dump has been proven to work.
+
+### Decisions this phase forced
+
+**The candle store is 138 MB, not 4 GB, and that reframes the phase.** Phase 12's numbers were
+never written down; read back off the database they are 187,528 daily rows spanning 2021-08-20 to
+2026-08-26, and 525,397 5m rows spanning **2026-06-22 to 2026-08-26 — 48 sessions.** Whatever Pro's
+intraday retention is, the backfill came back with two and a half months, not five years. Backups
+at this size are trivial rather than the thing the deploy is designed around, and the decision the
+plan defers to "whether to keep paying" is narrower than it looked: Pro is buying a universe that
+stays current and a benchmark, not intraday depth.
+
+**5m is a rolling window, so ingestion being off is data loss, not staleness.** Trap 11 already
+forbids the narrow tail refresh that would backfill a gap. The consequence it doesn't state is
+that any day the scheduler isn't running is a permanent hole in 5m — which is why
+`INGEST_ENABLED=true` is part of the cutover and not a follow-up.
+
+**Docker's stop grace was shorter than the shutdown path.** `shutdownTimeout` is 15s and Docker's
+default is 10s, so SIGKILL landed five seconds into the drain, inside `runner.Wait()` — producing
+exactly the orphaned `running` row this phase's checklist exists to prevent. The requeue path was
+correct the whole time and never got reached. `stop_grace_period: 30s`. A correct recovery path
+behind a deadline that fires first is indistinguishable from no recovery path.
+
+**`TRUST_PROXY` is explicit, and defaults to false.** Behind Caddy every request arrives from
+Caddy's address, so a per-IP limiter keyed on `RemoteAddr` gives the whole internet one shared
+bucket and the first abusive client locks out everyone. Keyed on `X-Forwarded-For` with nothing in
+front, any caller picks their own bucket and the limiter is decorative. Neither failure shows up
+in testing. The Caddyfile *overwrites* `X-Forwarded-For` with `{remote_host}` rather than appending,
+so the header cannot be spoofed through the proxy, and the config flag is what stops the dev
+deployment trusting a header nobody is setting.
+
+**`GOMEMLIMIT` is the memory ceiling; the container limit alone is not.** Go reads the host's RAM
+and CPU count, not the cgroup's. On a 12 GB box under a 1024m cap the GC grows the heap past the
+limit and the app is OOM-killed, while `Workers()` sizes the backtest pool to cores the container
+may not use. `MaxBars` and `runTimeout` bound a single run; these two bound the aggregate.
+
+**Stats are a JSON endpoint, not a Prometheus exporter.** On one box with no scraper, an exporter
+is a dependency with no consumer. `/api/v1/admin/stats` reports pool counts, queue depth, heap and
+the live `GOMEMLIMIT` — enough to answer "is it wedged", which is the only question this deployment
+gets asked. It also confirms the memory limit actually took, which is otherwise invisible until
+something dies.
+
+**Both admin routes sit behind `requireAuth`, which is any user, not an admin.** With three rows in
+`users` that is a deliberate acceptance, not an oversight. It becomes a `role` column and a
+`requireAdmin` wrapper the first time someone else registers.
+
+**The backup script refuses to upload a dump under 1 MB.** `set -o pipefail` catches a `pg_dump`
+that dies mid-stream, but a dump that succeeds against an empty or half-restored database does not
+fail — it uploads, looks like a healthy backup, and ages out the good ones behind it. A size floor
+is the cheap check that a backup nobody reads is still a backup.
+
+**Digest pinning is last, deliberately.** Pinning before the ARM build is proven means debugging
+pinned images. `postgres:17-alpine` is the one that matters: an unpinned tag that rolls to a new
+major refuses to start against a PG17 data directory, and the failure arrives during a routine
+`docker compose pull` rather than at a moment anyone chose.
 
 ---
 
@@ -3034,10 +3095,15 @@ Collected here because the code carries no comments — this is where the reason
   wrong intraday series comes back. Free retention caps at ~60 days, so whether the `<3mo` defect
   persists on Pro at real depth cannot be tested until the token is upgraded — check it first, by
   fetching one symbol at two window sizes and reconciling both against the stored `1d`.
-  **Measured on day one of the Pro month; the figures were not written down.** The budget half is
-  moot either way — the code issues one range request per symbol — but the depth number is what a
-  future re-backfill would be sized against, so it is worth recovering from the run's output or
-  by re-measuring one symbol while the token is live.
+  ~~**Measured on day one of the Pro month; the figures were not written down.**~~ **Recovered from
+  the store in Phase 13, and the answer is short: 48 sessions.** 5m spans 2026-06-22 to 2026-08-26,
+  525,397 rows across 151 symbols; daily spans 2021-08-20 to 2026-08-26, 187,528 rows. Pro bought
+  five years of daily and roughly two and a half months of intraday. What is still unseparated is
+  *why*: either intraday retention on Pro is the same ~60 days as Free, or `backfill` asked for a
+  `3mo` range token and got precisely that. One request settles it — fetch a single symbol at
+  `range=5y` on 5m and see whether anything predating 2026-06-22 comes back — and it can only be
+  asked while the token is live. Either way the practical consequence is fixed: **5m is a rolling
+  window, not an archive**, so it only extends as long as the scheduler keeps running.
 - ~~**Futures coverage.**~~ **Answered in Phase 12: available, with a settlement series rather
   than an OHLC one.** Futures live in their own namespace, `/api/v2/futures/*`. The equities
   `/quote/{ticker}` and `/available` endpoints know nothing about it and answer *Nenhum resultado

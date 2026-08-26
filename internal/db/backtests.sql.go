@@ -79,6 +79,37 @@ func (q *Queries) CountBacktestEquity(ctx context.Context, runID uuid.UUID) (int
 	return count, err
 }
 
+const countBacktestRunsByStatus = `-- name: CountBacktestRunsByStatus :many
+SELECT status, COUNT(*) AS runs FROM backtest_runs
+WHERE status IN ('queued', 'running')
+GROUP BY status
+`
+
+type CountBacktestRunsByStatusRow struct {
+	Status string `json:"status"`
+	Runs   int64  `json:"runs"`
+}
+
+func (q *Queries) CountBacktestRunsByStatus(ctx context.Context) ([]CountBacktestRunsByStatusRow, error) {
+	rows, err := q.db.Query(ctx, countBacktestRunsByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountBacktestRunsByStatusRow{}
+	for rows.Next() {
+		var i CountBacktestRunsByStatusRow
+		if err := rows.Scan(&i.Status, &i.Runs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 type CreateBacktestEquityParams struct {
 	RunID       uuid.UUID `json:"run_id"`
 	Ts          time.Time `json:"ts"`
