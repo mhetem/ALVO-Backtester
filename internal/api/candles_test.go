@@ -24,7 +24,7 @@ func testServer(t *testing.T) *Server {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(config.Config{}, nil, log, nil, calendar)
+	return NewServer(config.Config{}, nil, log, nil, calendar, nil)
 }
 
 func get(t *testing.T, handler http.HandlerFunc, target string) *httptest.ResponseRecorder {

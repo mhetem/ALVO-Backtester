@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	database "github.com/mhetem/ALVO-Backtester/internal/db"
 	"github.com/mhetem/ALVO-Backtester/internal/strategy"
@@ -233,6 +234,11 @@ func (s *Server) handleDeleteStrategy(w http.ResponseWriter, r *http.Request) {
 
 	deleted, err := s.queries.DeleteStrategy(r.Context(), database.DeleteStrategyParams{ID: id, UserID: userID})
 	if err != nil {
+		if stillReferenced(err) {
+			respondError(w, r, http.StatusConflict,
+				"this strategy has backtest runs, which hold the spec they ran — delete the runs first")
+			return
+		}
 		s.logError(r, "deleting strategy", err)
 		respondError(w, r, http.StatusInternalServerError, "internal server error")
 		return
@@ -357,6 +363,11 @@ func storedStrategy(row database.Strategy, plan *planBody) strategyBody {
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
 	}
+}
+
+func stillReferenced(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == foreignKeyUsed
 }
 
 func strategyID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {

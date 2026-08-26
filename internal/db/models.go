@@ -10,6 +10,44 @@ import (
 	"github.com/google/uuid"
 )
 
+type BacktestEquity struct {
+	RunID       uuid.UUID `json:"run_id"`
+	Ts          time.Time `json:"ts"`
+	EquityCents int64     `json:"equity_cents"`
+}
+
+type BacktestRun struct {
+	ID           uuid.UUID  `json:"id"`
+	UserID       uuid.UUID  `json:"user_id"`
+	StrategyID   uuid.UUID  `json:"strategy_id"`
+	Spec         []byte     `json:"spec"`
+	SymbolID     int64      `json:"symbol_id"`
+	Timeframe    string     `json:"timeframe"`
+	StartDate    time.Time  `json:"start_date"`
+	EndDate      time.Time  `json:"end_date"`
+	CapitalCents int64      `json:"capital_cents"`
+	Status       string     `json:"status"`
+	Metrics      []byte     `json:"metrics"`
+	Error        *string    `json:"error"`
+	CreatedAt    time.Time  `json:"created_at"`
+	StartedAt    *time.Time `json:"started_at"`
+	FinishedAt   *time.Time `json:"finished_at"`
+}
+
+type BacktestTrade struct {
+	RunID      uuid.UUID  `json:"run_id"`
+	Seq        int32      `json:"seq"`
+	Side       string     `json:"side"`
+	Qty        int64      `json:"qty"`
+	EntryTs    time.Time  `json:"entry_ts"`
+	EntryPrice float64    `json:"entry_price"`
+	ExitTs     *time.Time `json:"exit_ts"`
+	ExitPrice  *float64   `json:"exit_price"`
+	PnlCents   *int64     `json:"pnl_cents"`
+	FeesCents  int64      `json:"fees_cents"`
+	ExitReason *string    `json:"exit_reason"`
+}
+
 type BrapiUsage struct {
 	Day      time.Time `json:"day"`
 	Requests int32     `json:"requests"`

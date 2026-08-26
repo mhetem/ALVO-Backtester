@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mhetem/ALVO-Backtester/internal/api"
+	"github.com/mhetem/ALVO-Backtester/internal/backtest"
 	"github.com/mhetem/ALVO-Backtester/internal/config"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
 )
@@ -33,9 +34,12 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 
+	runner := backtest.NewRunner(pool, calendar, log)
+	runner.Start(ctx)
+
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           api.NewServer(cfg, pool, log, static, calendar).Handler(),
+		Handler:           api.NewServer(cfg, pool, log, static, calendar, runner).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -60,5 +64,8 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer stopCancel()
 
-	return srv.Shutdown(stopCtx)
+	err = srv.Shutdown(stopCtx)
+	runner.Wait()
+
+	return err
 }

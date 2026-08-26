@@ -52,3 +52,6 @@ UPDATE symbols
 SET active = FALSE, updated_at = NOW()
 WHERE active AND ticker = ANY($1::text[])
 RETURNING ticker;
+
+-- name: GetSymbolByID :one
+SELECT * FROM symbols WHERE id = $1;

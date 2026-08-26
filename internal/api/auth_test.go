@@ -21,7 +21,7 @@ func testAuthServer(t *testing.T) *Server {
 	t.Helper()
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(config.Config{JWTSecret: testJWTSecret}, nil, log, nil, nil)
+	return NewServer(config.Config{JWTSecret: testJWTSecret}, nil, log, nil, nil, nil)
 }
 
 func postJSON(t *testing.T, handler http.HandlerFunc, target, body string) *httptest.ResponseRecorder {

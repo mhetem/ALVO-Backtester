@@ -20,9 +20,10 @@ type Server struct {
 	static  fs.FS
 	cal     *market.Calendar
 	candles *market.CandleService
+	queue   Queue
 }
 
-func NewServer(cfg config.Config, db *pgxpool.Pool, log *slog.Logger, static fs.FS, cal *market.Calendar) *Server {
+func NewServer(cfg config.Config, db *pgxpool.Pool, log *slog.Logger, static fs.FS, cal *market.Calendar, queue Queue) *Server {
 	return &Server{
 		cfg:     cfg,
 		db:      db,
@@ -31,6 +32,7 @@ func NewServer(cfg config.Config, db *pgxpool.Pool, log *slog.Logger, static fs.
 		static:  static,
 		cal:     cal,
 		candles: market.NewCandleService(db, cal),
+		queue:   queue,
 	}
 }
 
@@ -58,6 +60,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleGetStrategy)))
 	mux.Handle("PUT /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateStrategy)))
 	mux.Handle("DELETE /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteStrategy)))
+
+	mux.Handle("POST /api/v1/backtests", s.requireAuth(http.HandlerFunc(s.handleCreateBacktest)))
+	mux.Handle("GET /api/v1/backtests/{id}", s.requireAuth(http.HandlerFunc(s.handleGetBacktest)))
 
 	mux.Handle("GET /api/v1/admin/brapi-usage", s.requireAuth(http.HandlerFunc(s.handleBrapiUsage)))
 

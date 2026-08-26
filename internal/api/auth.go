@@ -24,6 +24,7 @@ const (
 	minPasswordLen  = 8
 	maxPasswordLen  = 256
 	uniqueViolation = "23505"
+	foreignKeyUsed  = "23503"
 )
 
 const (

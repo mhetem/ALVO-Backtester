@@ -37,6 +37,33 @@ func (q *Queries) DeactivateSymbols(ctx context.Context, dollar_1 []string) ([]s
 	return items, nil
 }
 
+const getSymbolByID = `-- name: GetSymbolByID :one
+SELECT id, ticker, short_name, long_name, kind, currency, lot_size, tick_size, point_value, active, tracked, first_seen, last_seen, created_at, updated_at FROM symbols WHERE id = $1
+`
+
+func (q *Queries) GetSymbolByID(ctx context.Context, id int64) (Symbol, error) {
+	row := q.db.QueryRow(ctx, getSymbolByID, id)
+	var i Symbol
+	err := row.Scan(
+		&i.ID,
+		&i.Ticker,
+		&i.ShortName,
+		&i.LongName,
+		&i.Kind,
+		&i.Currency,
+		&i.LotSize,
+		&i.TickSize,
+		&i.PointValue,
+		&i.Active,
+		&i.Tracked,
+		&i.FirstSeen,
+		&i.LastSeen,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getSymbolByTicker = `-- name: GetSymbolByTicker :one
 SELECT id, ticker, short_name, long_name, kind, currency, lot_size, tick_size, point_value, active, tracked, first_seen, last_seen, created_at, updated_at FROM symbols WHERE ticker = $1
 `

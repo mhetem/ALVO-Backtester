@@ -2035,32 +2035,226 @@ CREATE TABLE backtest_equity (
 );
 ```
 
-- [ ] **The bar loop, and the one rule that matters:** at bar *i*, feed the candle to indicators,
+- [x] **The bar loop, and the one rule that matters:** at bar *i*, feed the candle to indicators,
       evaluate rules using values as of *close of bar i*, emit intents. Intents fill at **bar
       *i+1* open**. The engine must make it structurally impossible for a rule to read bar *i+1* —
       lookahead bias is the single most common way a backtester produces a beautiful lie
-- [ ] Broker sim: market / limit / stop orders, plus bracket (stop-loss + take-profit) attached
+- [x] Broker sim: market / limit / stop orders, plus bracket (stop-loss + take-profit) attached
       to a position
-- [ ] **Intrabar ambiguity:** when a bar's high hits the take-profit *and* its low hits the stop,
+- [x] **Intrabar ambiguity:** when a bar's high hits the take-profit *and* its low hits the stop,
       OHLC cannot say which came first. Assume the **stop** filled. Pessimistic and consistent;
       record the ambiguity count in the run metrics so you know how often it mattered
-- [ ] Slippage: bps on the fill price, applied against you. Fees: `brokerage_cents` fixed +
+- [x] Slippage: bps on the fill price, applied against you. Fees: `brokerage_cents` fixed +
       `fee_bps` on notional. B3 emolumentos are roughly 3.25 bps — configurable, not hardcoded
-- [ ] Position sizing: `fixed_qty | pct_equity | fixed_cash | risk_pct` (the last sized off the
+- [x] Position sizing: `fixed_qty | pct_equity | fixed_cash | risk_pct` (the last sized off the
       ATR stop distance)
-- [ ] Round to `lot_size` and `tick_size` from the symbol row. A backtest buying 137 shares of a
+- [x] Round to `lot_size` and `tick_size` from the symbol row. A backtest buying 137 shares of a
       100-lot stock is not a trade that existed
-- [ ] Long-only first. Short selling in a second pass — borrow cost and shorting restrictions are
+- [x] Long-only first. Short selling in a second pass — borrow cost and shorting restrictions are
       their own problem
-- [ ] Worker pool draining `backtest_runs WHERE status = 'queued'` with `FOR UPDATE SKIP LOCKED`.
+- [x] Worker pool draining `backtest_runs WHERE status = 'queued'` with `FOR UPDATE SKIP LOCKED`.
       `SKIP LOCKED` is what makes `docker compose up --scale app=3` safe without a queue broker
-- [ ] Container CPU/memory limits in compose, and a worker count derived from `GOMAXPROCS` — which
+- [x] Container CPU/memory limits in compose, and a worker count derived from `GOMAXPROCS` — which
       respects the container's CPU quota in Go 1.25, so it needs no manual tuning
-- [ ] `POST /api/v1/backtests` → 202 + run id; `GET /api/v1/backtests/{id}` → status/result
-- [ ] Determinism: same spec + same candles = byte-identical metrics. A test asserts this
+- [x] `POST /api/v1/backtests` → 202 + run id; `GET /api/v1/backtests/{id}` → status/result
+- [x] Determinism: same spec + same candles = byte-identical metrics. A test asserts this
+
+*(The tables landed as `00012_backtests.sql`, with `CHECK`s on `status`, `timeframe`, `capital_cents`
+and `end_date >= start_date` added on top of the DDL above, plus
+`backtest_runs_queue_idx ON (created_at) WHERE status = 'queued'` — the partial index the claim
+query actually walks — and `backtest_runs_user_idx ON (user_id, created_at DESC)`.)*
 
 **Done when:** a buy-and-hold strategy returns exactly the underlying's return minus one round
 trip of costs. That single test catches most engine bugs.
+
+### Decisions this phase forced
+
+**The bar loop has five steps, and their order *is* the lookahead guard.** For each bar the engine
+does: fill whatever intent last bar's close produced, against this bar's open → check the resting
+brackets against this bar's high and low → **push the bar into the tape** → evaluate the rules →
+mark equity at the close. The push is third on purpose. When an intent fills, the tape has not yet
+seen the bar it is filling on, and when the rules run, the only intent they can create is one that
+no code will look at until the next iteration. A rule cannot influence a fill on the bar it was
+evaluated on because at fill time the rule has not run yet, and it cannot read the bar it fills on
+because at rule time the tape is one bar behind. That is a stronger guarantee than "remember to use
+`i+1`" — it is a property of the sequence, not of the arithmetic. Phase 8's `Tape` supplies the
+other half: `Slot` and `Field` take non-negative offsets only, so there is no expression a rule
+could write that reaches forward.
+
+**The final bar closes the position before its equity is marked, not after.** An open position at
+the end of the run is sold at the last bar's close with `exit_reason = end_of_run`, and only then
+does the last equity point get written. Marked the other way round, the curve's last value would
+carry a position the trade table says was closed, and the run's return would disagree with the sum
+of its own trades — the first thing anyone checks. It also means a pending entry on the final bar
+is dropped rather than filled: there is no next open to fill it at, and inventing one is exactly the
+lie the bar loop exists to prevent.
+
+**The stop wins an ambiguous bar, and how often that happened is a metric.** When a bar's low
+reaches the stop and its high reaches the target, OHLC cannot say which came first — the bar is four
+numbers, not a tape. The engine fills the stop. What matters more than the choice is that
+`ambiguous_bars` is in the metrics: a run with three ambiguous bars out of two hundred is telling
+you something different from a run where half the exits were coin flips, and the second one should
+not be read as a result at all. Phase 11's finer answer, if it is ever wanted, is to resolve the
+ambiguity from the 5m base candles the daily bar was folded from; the count is what tells you
+whether that work would pay.
+
+**A limit fill is not slipped; a stop fill is.** Slippage "against you" is right for a market order
+and right for a stop, which becomes a market order the instant it is touched — but a resting limit
+fills at its price *or better* or it does not fill at all, and shaving basis points off it models a
+fill that no exchange would print. So the take-profit fills at exactly its level, while the
+stop-loss carries the same slippage as an entry. Both orders are honest about gaps: a bar that opens
+straight through a sell stop fills at the **open**, not at the stop price, which is the loss you
+would actually have taken. The mirror case is price improvement — a bar that opens above a sell
+limit fills at the open — and it is in there for symmetry, not generosity.
+
+**Brackets are priced at the signal, anchored to the fill, and an entry that cannot price its
+bracket does not happen.** An ATR stop reads its ATR at the close of the *signal* bar, because that
+is the information you had when you placed the order; the resulting distance is then hung off the
+price you actually got at the next open. The consequence worth stating: if the bracket's ATR is
+still warming when the entry rule fires, the engine **skips the entry** and counts it in
+`skipped_entries` rather than entering without the stop. A strategy stripped of the stop it
+declared is a different strategy, and it is the more flattering one — it never takes the small loss.
+This is the same three-valued discipline Phase 8 applied to rules, extended to the orders the rules
+imply. It is also why the metric exists: five skipped entries at the start of a run is warmup,
+five hundred is a spec whose stop can never be priced.
+
+**Sizing runs at the fill price, not the signal price.** Sizing off the close you saw is the
+intuitive choice and it breaks on the first gap: a position sized against last night's close is
+unaffordable at this morning's open, and cash goes negative — silently, since nothing in a backtest
+bounces. So the order is fill price → stop distance → quantity → afford check → lot floor. The
+affordability clamp is computed directly (cash, less fixed brokerage, over price plus the fee rate)
+and then walked down one lot at a time until the total cost fits, because the direct form cannot
+account for the rounding that lot flooring introduces. `pct_equity` reads *cash*, which is
+unambiguous here only because the engine is flat whenever it sizes: one position at a time, no
+pyramiding, so equity and cash are the same number at the only moment sizing is asked for.
+
+**Lot flooring is why 137 shares became 100.** `lot_size` and `tick_size` come off the symbol row,
+not from a constant: quantities floor to a whole lot, and prices round to a tick **against you** —
+up on a buy, down on a sell. The tick rounding carries an epsilon check that returns the price
+untouched when it already sits on a tick, which matters more than it sounds: without it,
+`price/tick` float noise would occasionally kick an exact price up a whole tick, and the
+buy-and-hold test would stop being exact for a reason that has nothing to do with trading.
+
+**Money is integer cents; prices stay float64.** Cash, equity, PnL and fees are `int64` cents, and
+every conversion from a price crosses through one `math.Round` at the notional. Prices are float64
+because that is what `NUMERIC(18,6)` becomes coming through sqlc, and converting them to a decimal
+type at the boundary would buy nothing the rounding at the notional does not already buy. The
+determinism the plan asked for falls out of this: same spec, same candles, same sequence of float
+operations, and the only place a fraction of a cent could accumulate is closed off by rounding at
+a fixed point. `Metrics` is a struct rather than a map, so its JSON field order is fixed too, and
+nothing inside a run reads the clock, iterates a map, or spawns a goroutine. The test runs the same
+spec over the same bars twice and compares the marshalled results byte for byte.
+
+**The done-when measures the underlying from the fill bar's open, not from the first close.** A
+buy-and-hold strategy is an entry that is always true and no exit; it buys at the second bar's open
+and sells at the last bar's close, so "the underlying's return" for the purposes of that test is
+`(last close − fill open) × qty`, and the run matches it to the cent with costs zeroed. With costs
+switched on, the difference is exactly one round trip — two brokerages and two `fee_bps` charges —
+which the test asserts as a subtraction rather than by recomputing the fees a second way.
+
+**A reversal costs a bar, and that is the model being honest.** An exit signalled at one close fills
+at the next open, and the entry rule is only evaluated at *that* bar's close, so flipping out of a
+position and back in takes one flat bar. The alternative — evaluating the entry immediately after
+the exit fills, mid-bar — would be reading a price the rule is not entitled to. Strategies that look
+good only when they can reverse instantly are strategies that look good only in a backtester.
+
+**The queue is the database, and `SKIP LOCKED` is the whole trick.** `ClaimBacktestRun` is one
+`UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`, which means two
+containers racing for the same queued run cannot collide and neither blocks: the loser skips the
+locked row and takes the next one. No broker, no leases, no heartbeat table. Workers wake on an
+in-process nudge channel when the API queues a run in the same container, and fall back to a 2s poll
+for runs queued by another replica — the poll is the correctness path, the nudge is only latency.
+Every run carries a 10-minute deadline, and a janitor requeues anything left `running` for 30
+minutes; the deadline being shorter than the threshold is what makes the janitor safe under
+`--scale app=3`, since a live run can never look abandoned. A clean shutdown returns the in-flight
+run to `queued` rather than failing it, using a context detached from the cancellation that caused
+the shutdown.
+
+**Workers are `GOMAXPROCS - 1`, floored at one.** Go 1.25 derives `GOMAXPROCS` from the container's
+CPU quota, so `cpus: "2.0"` in the prod compose file yields one worker and leaves a core for serving
+requests — which is the point of subtracting one. A backtest is a tight CPU-bound loop with no IO
+after the candles are loaded; letting it saturate every core would make the API's latency a function
+of how many people are running backtests. More throughput is a horizontal question:
+`--scale app=3` gives three containers, three workers, and `SKIP LOCKED` sorts out who runs what.
+
+**A truncated candle range is an error, not a shorter backtest.** `CandleService.Load` takes a row
+limit and returns the *oldest* rows that fit, so a range that exceeds it would silently produce a
+run that stops early and reports a return for a period it never covered. The runner compares the
+base row count against the limit and fails the run with a message that names the fix — narrow the
+range or use a wider timeframe. Fifty thousand base rows is roughly seven thousand hourly bars or
+two hundred years of daily ones; it binds on 5m ranges and almost nothing else.
+
+**A run copies the spec, so deleting a strategy that has runs is a 409.** `backtest_runs.spec` holds
+the canonical JSON that actually ran, and `strategy_id` references `strategies(id)` with no cascade
+— exactly as the plan's DDL wrote it. That combination means `DELETE /strategies/{id}` can now fail
+on a foreign key, so the handler catches `23503` and answers 409 with the reason rather than a 500.
+Cascading instead would have deleted the runs, which is the wrong default for the one table in the
+app that exists to be a record of what happened.
+
+**Validation of a run happens twice, deliberately.** The API parses and compiles the stored spec
+before queueing, so a spec that cannot compile is a 400 while someone is looking at the screen
+rather than an errored row discovered later; the worker then compiles it again at run start, because
+a `*Plan` holds live indicator instances and belongs to exactly one goroutine — the constraint
+Phase 8 wrote down and this phase is the first to actually need.
+
+> **Status: done, and verified end to end against the store.** `make sqlc`, `make migrate` and the
+> full check run — gofmt, vet, staticcheck, gosec, the Go suite under `-race`, and `svelte-check` —
+> all pass on the generated tree. Both guesses about the generated code held: `:copyfrom` added
+> `CopyFrom` to the `DBTX` interface in `internal/db/db.go` without disturbing
+> `market.NewCandleService`, which takes `DBTX` and is handed a `*pgxpool.Pool` everywhere; and
+> `GetBacktestRun`'s `r.*, s.ticker` produced a `GetBacktestRunRow` rather than reusing the model.
+>
+> The offline tests are what they were built to be — `broker_test.go` walks every order kind against
+> a single bar including both gap cases, and `engine_test.go` runs whole strategies over hand-written
+> candles and asserts the exact bar each fill lands on, the done-when among them. But the path
+> through Postgres is only provable in Postgres, and it ran: PETR4 daily, 2023-01-02 to 2024-12-30,
+> buy-and-hold at `pct_equity 0.95` on R$100,000. **Claimed 3ms after the API queued it** — the nudge
+> channel, not the 2s poll. 499 bars in, 499 equity rows out, first `2023-01-02` and last
+> `2024-12-30`, so the `DATE` round trip keeps both ends of the range. One trade: in at 22.96 on
+> **2023-01-03**, the bar *after* the signal, out at 36.17 on the last bar with `end_of_run`, 4100
+> shares. `bars_in_market` came back 497 — `bars - 2`, the first bar flat and the last one closed
+> before its equity was marked.
+>
+> **The money reconciles by hand, which is the check that mattered.** R$95,000 of budget at 22.96
+> buys 4137 shares, floored to 4100 by the 100-share lot. 4100 × 22.96 is 9,413,600 cents and 3.25
+> bps of that is 3,059; the exit's 14,829,700 cents costs 4,820; 3,059 + 4,820 is the 7,879 the run
+> reported, and 14,829,700 − 9,413,600 − 7,879 is its 5,408,221 to the cent. The 54.08% return sits
+> under the underlying's 57.53% over the same two fills because 5% of capital never left cash by
+> construction and lot rounding left a little more behind — R$5,833 idle — with about 16.5 bps going
+> to costs. Every number in the metrics block is reachable from the two fills, which is the property
+> that makes the engine arguable with rather than merely green.
+>
+> Carried into later phases, deliberately:
+> - **No list endpoint and no `/trades` or `/equity`.** The plan puts those in Phase 10; until then a
+>   run id comes back in the 202 and in the `Location` header, and that is the only handle on it.
+> - **Short selling is still not modelled**, on either side of the boundary: Phase 8's parser rejects
+>   `"short"`, and the engine only ever sends `Buy` to open. `side` is still a column and
+>   `OrderSide` is still an enum, so the second pass adds a direction rather than a concept.
+> - **`OrderLimit` and `OrderStop` exist for the brackets and nothing else.** No rule can emit a
+>   resting order today — entries and rule exits are always market-at-next-open — so the limit paths
+>   are exercised by the take-profit and by tests. A limit entry is a spec change, not an engine one.
+> - **One position at a time, no pyramiding, no partial exits.** The whole position leaves on the
+>   first thing that fires. Scaling out means a trade row that is no longer one row.
+> - **The equity curve is one row per bar**, capped by the same 50,000-bar limit as the run. A 5m run
+>   over a year is around 19,000 rows; `:copyfrom` writes them in one round trip, and Phase 10 will
+>   want to downsample them for the chart rather than ship them all.
+> - **`skipped_entries` counts, but does not say why.** Warmup, an unpriceable bracket, and not
+>   enough cash for a single lot all land in the same counter. Splitting it is a metrics change
+>   Phase 10 can make when the report has somewhere to show it.
+> - **Metrics are the arithmetic Phase 9 needed to test itself** — bars, trades, wins, losses, fees,
+>   final equity, return, exit reasons, ambiguity. Drawdown, Sharpe and the rest are Phase 10's list,
+>   and they read the equity curve rather than the engine, so nothing in here has to change to get
+>   them.
+> - **The engine trades raw OHLC, never `adj_close`.** `indicator.Candle` has no adjusted field, so
+>   the indicator library, the charts and now the engine all read raw prices. That is at least
+>   consistent, and it is wrong for any total-return question: the PETR4 run above reports a price
+>   return and silently drops one of the heaviest dividend streams on the exchange. Phase 10 is where
+>   this has to be settled, because it is a decision about what a return *means* — and its benchmark
+>   comparison is meaningless unless both sides are on the same basis.
+> - **The janitor's thresholds are constants, not config.** 10-minute run deadline, 30-minute stale
+>   window, 2-second poll. They are only wrong if a legitimate run can exceed ten minutes, which the
+>   50,000-bar cap is meant to prevent — if that stops being true, the deadline moves first and the
+>   stale window has to move with it.
 
 ---
 
