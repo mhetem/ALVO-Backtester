@@ -11,6 +11,8 @@ func TestClassifyTicker(t *testing.T) {
 		{"MGLU3", KindStock},
 		{"BBDC4", KindStock},
 		{"petr4", KindStock},
+		{"B3SA3", KindStock},
+		{"b3sa3", KindStock},
 		{"BPAC11", KindUnit},
 		{"SANB11", KindUnit},
 		{"KLBN11", KindUnit},
@@ -39,7 +41,7 @@ func TestClassifyTicker(t *testing.T) {
 }
 
 func TestClassifyTickerRejectsUnknownShapes(t *testing.T) {
-	for _, ticker := range []string{"", "   ", "PETR", "PETR4F", "PETR44", "TOOLONG11", "12345"} {
+	for _, ticker := range []string{"", "   ", "PETR", "PETR4F", "PETR44", "TOOLONG11", "12345", "3SAB3", "3SAB11"} {
 		if kind, err := ClassifyTicker(ticker); err == nil {
 			t.Errorf("ClassifyTicker(%q) = %s, want an error", ticker, kind)
 		}

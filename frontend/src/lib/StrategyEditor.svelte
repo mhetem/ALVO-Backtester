@@ -41,9 +41,10 @@
     catalog: Catalog | null;
     user: User | null;
     onClose: () => void;
+    onHelp?: () => void;
   };
 
-  let { catalog, user, onClose }: Props = $props();
+  let { catalog, user, onClose, onHelp }: Props = $props();
 
   let strategies = $state<SavedStrategy[]>([]);
   let activeId = $state<string | null>(null);
@@ -361,7 +362,12 @@
 
   <div class="dialog" role="dialog" aria-modal="true" aria-label="Strategies">
     <header>
-      <h2>Strategies</h2>
+      <h2>
+        Strategies
+        {#if onHelp}
+          <button type="button" class="help" onclick={onHelp} title="How strategies work">?</button>
+        {/if}
+      </h2>
       <div class="tabs" role="group" aria-label="Editor mode">
         <button type="button" class:on={tab === 'builder'} onclick={toBuilder}>Builder</button>
         <button type="button" class:on={tab === 'json'} onclick={toJSON}>JSON</button>
@@ -743,6 +749,21 @@
   .tabs button.on {
     color: var(--accent-fg);
     background: var(--accent);
+  }
+
+  .help {
+    font: inherit;
+    font-size: 0.7rem;
+    line-height: 1;
+    width: 1.15rem;
+    height: 1.15rem;
+    margin-left: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    vertical-align: middle;
   }
 
   .close {

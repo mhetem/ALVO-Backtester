@@ -27,9 +27,10 @@
     user: User | null;
     onTrades: (trades: Trade[], symbols: string[]) => void;
     onClose: () => void;
+    onHelp?: () => void;
   };
 
-  let { symbol, timeframe, user, onTrades, onClose }: Props = $props();
+  let { symbol, timeframe, user, onTrades, onClose, onHelp }: Props = $props();
 
   let strategies = $state<SavedStrategy[]>([]);
   let runs = $state<Run[]>([]);
@@ -45,7 +46,7 @@
   let start = $state(defaultStart());
   let end = $state(today());
   let capital = $state(100000);
-  let maxPositions = $state(1);
+  let heldOverride = $state<number | null>(null);
 
   let error = $state<string | null>(null);
   let busy = $state(false);
@@ -59,6 +60,13 @@
       .split(',')
       .map((ticker) => ticker.trim().toUpperCase())
       .filter((ticker) => ticker !== ''),
+  );
+
+  // The API reads max_positions = 0 as "hold every name", which is what someone typing a
+  // list of tickers means. Until the field is touched, follow the basket instead of pinning
+  // it to one and silently turning a portfolio into a one-at-a-time rotation.
+  const maxPositions = $derived(
+    heldOverride === null ? basket.length : Math.min(Math.max(heldOverride, 1), basket.length),
   );
 
   const canRun = $derived(
@@ -185,7 +193,7 @@
         start,
         end,
         capital_cents: Math.round(capital * 100),
-        max_positions: Math.min(maxPositions, basket.length),
+        max_positions: maxPositions,
       });
 
       runs = [run, ...runs];
@@ -232,7 +240,12 @@
 
   <div class="dialog" role="dialog" aria-modal="true" aria-label="Backtests">
     <header>
-      <h2>Backtests</h2>
+      <h2>
+        Backtests
+        {#if onHelp}
+          <button type="button" class="help" onclick={onHelp} title="How backtests work">?</button>
+        {/if}
+      </h2>
       <button type="button" class="close" onclick={onClose} aria-label="Close">×</button>
     </header>
 
@@ -257,9 +270,21 @@
           </select>
         </label>
 
-        <label>
-          <span>{basket.length > 1 ? 'Symbols' : 'Symbol'}</span>
-          <input bind:value={runSymbol} spellcheck="false" autocapitalize="characters" />
+        <label class="wide">
+          <span>{basket.length > 1 ? `Symbols · ${basket.length}` : 'Symbol'}</span>
+          <input
+            bind:value={runSymbol}
+            spellcheck="false"
+            autocapitalize="characters"
+            placeholder="PETR4, VALE3, ITUB4"
+          />
+          <small>
+            {#if basket.length > 1}
+              Basket of {basket.length} on shared capital, holding {maxPositions} at once.
+            {:else}
+              One ticker, or several separated by commas to backtest a basket on shared capital.
+            {/if}
+          </small>
         </label>
 
         <label class="short">
@@ -289,7 +314,13 @@
         {#if basket.length > 1}
           <label class="short">
             <span>Held at once</span>
-            <input type="number" min="1" max={basket.length} bind:value={maxPositions} />
+            <input
+              type="number"
+              min="1"
+              max={basket.length}
+              value={maxPositions}
+              oninput={(event) => (heldOverride = Number(event.currentTarget.value))}
+            />
           </label>
         {/if}
 
@@ -393,6 +424,21 @@
     font-size: 0.95rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+
+  .help {
+    font: inherit;
+    font-size: 0.7rem;
+    line-height: 1;
+    width: 1.15rem;
+    height: 1.15rem;
+    margin-left: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    vertical-align: middle;
   }
 
   .close {
@@ -537,6 +583,16 @@
   .detail {
     overflow-y: auto;
     min-width: 0;
+  }
+
+  .launch label.wide {
+    flex: 1 1 100%;
+  }
+
+  .launch label small {
+    color: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.35;
   }
 
   .hint {

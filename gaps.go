@@ -63,7 +63,7 @@ func runGaps(ctx context.Context, cfg config.Config, log *slog.Logger, args []st
 		}
 	}
 
-	symbols, err := resolveSymbols(runCtx, pool, *tickers, *universe)
+	symbols, err := resolveSymbols(runCtx, ingester, *tickers, *universe)
 	if err != nil {
 		return err
 	}

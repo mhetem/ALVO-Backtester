@@ -4,7 +4,7 @@ COMPOSE_PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml
 SQLC_IMAGE   := sqlc/sqlc:latest
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols backfill sync-candles gaps candles build test vet lint sec fmt fmt-check check check-frontend frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
+.PHONY: help up up-dev up-prod down restart logs ps psql migrate sqlc sync-symbols backfill sync-candles sync-futures gaps candles build test vet lint sec fmt fmt-check check check-frontend frontend I-KNOW-THIS-DELETES-THE-CANDLE-STORE
 
 help:
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -49,6 +49,9 @@ backfill: ## Fetch history into candles. ARGS="--symbol PETR4 --timeframe 1d --d
 
 sync-candles: ## Refresh the last few sessions for every tracked symbol. ARGS="--timeframe 1d"
 	$(RUN) sync-candles $(ARGS)
+
+sync-futures: ## Fetch B3 futures contracts and their settlement history. ARGS="--root WIN --dry-run"
+	$(RUN) sync-futures $(ARGS)
 
 gaps: ## Report missing sessions against the trading calendar. ARGS="--symbol PETR4 --timeframe 1d"
 	$(RUN) gaps $(ARGS)

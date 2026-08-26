@@ -44,7 +44,7 @@ func runSyncCandles(ctx context.Context, cfg config.Config, log *slog.Logger, ar
 	}
 	defer pool.Close()
 
-	symbols, err := resolveSymbols(runCtx, pool, *tickers, *universe && *tickers == "")
+	symbols, err := resolveSymbols(runCtx, ingester, *tickers, *universe && *tickers == "")
 	if err != nil {
 		return err
 	}

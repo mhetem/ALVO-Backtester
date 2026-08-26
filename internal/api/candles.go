@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	database "github.com/mhetem/ALVO-Backtester/internal/db"
 	"github.com/mhetem/ALVO-Backtester/internal/indicator"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
 )
@@ -85,14 +87,16 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := s.candles.Page(r.Context(), market.PageRequest{
+	request := market.PageRequest{
 		SymbolID:  symbol.ID,
 		Timeframe: timeframe,
 		From:      from,
 		To:        to,
 		Before:    cursor,
 		Limit:     limit,
-	})
+	}
+
+	page, err := s.candlePage(r.Context(), symbol, request)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "reading candles",
 			slog.String("request_id", RequestIDFrom(r.Context())),
@@ -107,7 +111,7 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	body := newCandlesBody(symbol.Ticker, page)
 
 	if len(instances) > 0 {
-		prime, err := s.candles.Prime(r.Context(), market.PrimeRequest{
+		prime, err := s.primeFor(r.Context(), symbol, market.PrimeRequest{
 			SymbolID:  symbol.ID,
 			Timeframe: timeframe,
 			Before:    page.Oldest(),
@@ -178,4 +182,36 @@ func newCandlesBody(ticker string, page market.Page) candlesBody {
 	}
 
 	return body
+}
+
+func (s *Server) candlePage(ctx context.Context, symbol database.Symbol, req market.PageRequest) (market.Page, error) {
+	if market.Kind(symbol.Kind) != market.KindFuture {
+		return s.candles.Page(ctx, req)
+	}
+	return s.candles.PageContinuous(ctx, symbol.Ticker, req, market.ContinuousOptions{BackAdjust: true})
+}
+
+func (s *Server) primeFor(ctx context.Context, symbol database.Symbol, req market.PrimeRequest) ([]market.Candle, error) {
+	if market.Kind(symbol.Kind) != market.KindFuture {
+		return s.candles.Prime(ctx, req)
+	}
+	if req.Bars < 1 || req.Before.IsZero() {
+		return nil, nil
+	}
+
+	series, err := s.candles.LoadContinuous(ctx, symbol.Ticker, req.Timeframe,
+		req.Before.AddDate(-2, 0, 0), req.Before, market.ContinuousOptions{BackAdjust: true})
+	if err != nil {
+		return nil, err
+	}
+
+	candles := series.Candles
+	for len(candles) > 0 && !candles[len(candles)-1].TS.Before(req.Before) {
+		candles = candles[:len(candles)-1]
+	}
+	if len(candles) > req.Bars {
+		candles = candles[len(candles)-req.Bars:]
+	}
+
+	return candles, nil
 }

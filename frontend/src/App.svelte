@@ -9,6 +9,8 @@
   import SignIn from './lib/SignIn.svelte';
   import StrategyEditor from './lib/StrategyEditor.svelte';
   import SweepPanel from './lib/SweepPanel.svelte';
+  import HelpPanel from './lib/HelpPanel.svelte';
+  import type { HelpTopic } from './lib/help';
   import SymbolSearch from './lib/SymbolSearch.svelte';
   import {
     describe,
@@ -50,6 +52,7 @@
   let name = $state('');
   let timeframe = $state<Timeframe>('1d');
   let mode = $state<ChartMode>('candles');
+  let kind = $state('stock');
   let hovered = $state<Bar | null>(null);
   let latest = $state<Bar | null>(null);
   let count = $state(0);
@@ -72,6 +75,7 @@
   let strategyOpen = $state(false);
   let backtestOpen = $state(false);
   let sweepOpen = $state(false);
+  let helpTopic = $state<HelpTopic | null>(null);
 
   let marks = $state<TradeMark[]>([]);
   let marksFor = $state<string[]>([]);
@@ -109,6 +113,13 @@
   function select(row: SymbolRow) {
     symbol = row.ticker;
     name = row.name;
+    kind = row.kind;
+    if (row.kind === 'future') {
+      mode = 'line';
+      timeframe = '1d';
+    } else if (mode === 'line') {
+      mode = 'candles';
+    }
   }
 
   async function resolveName(ticker: string) {
@@ -116,6 +127,10 @@
       const rows = await searchSymbols(ticker);
       const match = rows.find((row) => row.ticker === ticker);
       name = match ? match.name : ticker;
+      kind = match ? match.kind : 'stock';
+      if (kind === 'future' && mode !== 'line') {
+        mode = 'line';
+      }
     } catch {
       name = ticker;
     }
@@ -335,6 +350,11 @@
 
     <div class="current">
       <strong>{symbol}</strong>
+      {#if kind === 'future'}
+        <span class="tag" title="Front-month contracts stitched into one series and back-adjusted across each roll. Prices are daily settlements, not traded opens.">
+          continuous · back-adjusted
+        </span>
+      {/if}
       <span class="name">{name}</span>
     </div>
 
@@ -364,6 +384,9 @@
       <button type="button" class:on={mode === 'bars'} onclick={() => (mode = 'bars')}>
         Bars
       </button>
+      <button type="button" class:on={mode === 'line'} onclick={() => (mode = 'line')}>
+        Line
+      </button>
     </div>
 
     <div class="group" role="group" aria-label="Indicators">
@@ -382,6 +405,17 @@
       </button>
       <button type="button" class:on={sweepOpen} onclick={() => (sweepOpen = true)}>
         Sweeps
+      </button>
+    </div>
+
+    <div class="group" role="group" aria-label="Help">
+      <button
+        type="button"
+        class:on={helpTopic !== null}
+        title="How strategies, backtests and sweeps work"
+        onclick={() => (helpTopic = 'strategies')}
+      >
+        Help
       </button>
     </div>
 
@@ -441,6 +475,10 @@
   </div>
 </main>
 
+{#if helpTopic !== null}
+  <HelpPanel topic={helpTopic} onClose={() => (helpTopic = null)} />
+{/if}
+
 {#if pickerOpen}
   <IndicatorPicker
     {catalog}
@@ -456,7 +494,12 @@
 {/if}
 
 {#if strategyOpen}
-  <StrategyEditor {catalog} {user} onClose={() => (strategyOpen = false)} />
+  <StrategyEditor
+    {catalog}
+    {user}
+    onClose={() => { if (helpTopic === null) strategyOpen = false; }}
+    onHelp={() => (helpTopic = 'strategies')}
+  />
 {/if}
 
 {#if backtestOpen}
@@ -465,12 +508,19 @@
     {timeframe}
     {user}
     onTrades={showTrades}
-    onClose={() => (backtestOpen = false)}
+    onClose={() => { if (helpTopic === null) backtestOpen = false; }}
+    onHelp={() => (helpTopic = 'backtests')}
   />
 {/if}
 
 {#if sweepOpen}
-  <SweepPanel {symbol} {timeframe} {user} onClose={() => (sweepOpen = false)} />
+  <SweepPanel
+    {symbol}
+    {timeframe}
+    {user}
+    onClose={() => { if (helpTopic === null) sweepOpen = false; }}
+    onHelp={() => (helpTopic = 'sweeps')}
+  />
 {/if}
 {/if}
 
@@ -537,6 +587,17 @@
   .current strong {
     font-weight: 600;
     letter-spacing: 0.02em;
+  }
+
+  .current .tag {
+    flex: none;
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 0.25rem;
+    color: var(--muted);
+    font-size: 0.6875rem;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
 
   .current .name {

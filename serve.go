@@ -8,9 +8,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/mhetem/ALVO-Backtester/internal/api"
 	"github.com/mhetem/ALVO-Backtester/internal/backtest"
+	"github.com/mhetem/ALVO-Backtester/internal/brapi"
 	"github.com/mhetem/ALVO-Backtester/internal/config"
+	database "github.com/mhetem/ALVO-Backtester/internal/db"
+	"github.com/mhetem/ALVO-Backtester/internal/ingest"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
 )
 
@@ -47,6 +52,8 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	runner := backtest.NewRunner(pool, calendar, rates, borrow, log)
 	runner.Start(ctx)
 
+	scheduled := startScheduler(ctx, cfg, pool, calendar, log)
+
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
 		Handler:           api.NewServer(cfg, pool, log, static, calendar, runner).Handler(),
@@ -76,6 +83,41 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	err = srv.Shutdown(stopCtx)
 	runner.Wait()
+	<-scheduled
 
 	return err
+}
+
+func startScheduler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, calendar *market.Calendar, log *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+
+	if !cfg.IngestEnabled {
+		log.Info("ingest scheduler disabled", slog.String("hint", "set INGEST_ENABLED=true to sync candles on a schedule"))
+		close(done)
+		return done
+	}
+
+	client := brapi.New(
+		brapi.WithToken(cfg.BrapiToken),
+		brapi.WithLogger(log),
+		brapi.WithUsageRecorder(brapi.NewDBRecorder(database.New(pool))),
+	)
+
+	scheduler := ingest.NewScheduler(
+		ingest.NewIngester(pool, client, calendar, log),
+		ingest.NewFuturesIngester(pool, client, calendar, log),
+		log,
+		ingest.ScheduleOptions{
+			Intraday:   cfg.IngestIntraday,
+			Futures:    cfg.IngestFutures,
+			CloseDelay: cfg.IngestDelay,
+		},
+	)
+
+	go func() {
+		defer close(done)
+		scheduler.Run(ctx)
+	}()
+
+	return done
 }

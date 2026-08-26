@@ -42,9 +42,10 @@
     timeframe: Timeframe;
     user: User | null;
     onClose: () => void;
+    onHelp?: () => void;
   };
 
-  let { symbol, timeframe, user, onClose }: Props = $props();
+  let { symbol, timeframe, user, onClose, onHelp }: Props = $props();
 
   type Cell = { row: number; col: number; run: SweepRun | null };
 
@@ -403,7 +404,12 @@
 
   <div class="dialog" role="dialog" aria-modal="true" aria-label="Sweeps">
     <header>
-      <h2>Sweeps</h2>
+      <h2>
+        Sweeps
+        {#if onHelp}
+          <button type="button" class="help" onclick={onHelp} title="How sweeps work">?</button>
+        {/if}
+      </h2>
       <button type="button" class="close" onclick={onClose} aria-label="Close">×</button>
     </header>
 
@@ -783,6 +789,21 @@
     font-size: 0.95rem;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+
+  .help {
+    font: inherit;
+    font-size: 0.7rem;
+    line-height: 1;
+    width: 1.15rem;
+    height: 1.15rem;
+    margin-left: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    vertical-align: middle;
   }
 
   .close {

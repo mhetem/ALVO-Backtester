@@ -3,20 +3,28 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
 	PlatformDev  = "dev"
 	PlatformProd = "prod"
+
+	DefaultIngestDelay = 30 * time.Minute
 )
 
 type Config struct {
-	DatabaseURL string
-	Port        string
-	BrapiToken  string
-	JWTSecret   string
-	Platform    string
+	DatabaseURL    string
+	Port           string
+	BrapiToken     string
+	JWTSecret      string
+	Platform       string
+	IngestEnabled  bool
+	IngestIntraday bool
+	IngestFutures  bool
+	IngestDelay    time.Duration
 }
 
 func (c Config) IsDev() bool { return c.Platform == PlatformDev }
@@ -32,6 +40,23 @@ func Load() (Config, error) {
 		BrapiToken:  os.Getenv("BRAPI_TOKEN"),
 		JWTSecret:   os.Getenv("JWT_SECRET"),
 		Platform:    envOr("PLATFORM", PlatformProd),
+	}
+
+	var err error
+	if cfg.IngestEnabled, err = envBool("INGEST_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.IngestIntraday, err = envBool("INGEST_INTRADAY", true); err != nil {
+		return Config{}, err
+	}
+	if cfg.IngestFutures, err = envBool("INGEST_FUTURES", true); err != nil {
+		return Config{}, err
+	}
+	if cfg.IngestDelay, err = envDuration("INGEST_CLOSE_DELAY", DefaultIngestDelay); err != nil {
+		return Config{}, err
+	}
+	if cfg.IngestDelay < 0 {
+		return Config{}, fmt.Errorf("INGEST_CLOSE_DELAY must not be negative, got %s", cfg.IngestDelay)
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -58,4 +83,28 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false, got %q", key, raw)
+	}
+	return value, nil
+}
+
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration such as 30m, got %q", key, raw)
+	}
+	return value, nil
 }

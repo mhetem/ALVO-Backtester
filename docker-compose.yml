@@ -29,6 +29,10 @@ services:
       PLATFORM: ${PLATFORM:-prod}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       BRAPI_TOKEN: ${BRAPI_TOKEN:-}
+      INGEST_ENABLED: ${INGEST_ENABLED:-false}
+      INGEST_INTRADAY: ${INGEST_INTRADAY:-true}
+      INGEST_FUTURES: ${INGEST_FUTURES:-true}
+      INGEST_CLOSE_DELAY: ${INGEST_CLOSE_DELAY:-30m}
       TZ: UTC
     ports:
       - "${APP_PORT:-8080}:8080"

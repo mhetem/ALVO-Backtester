@@ -74,6 +74,20 @@ func (q *Queries) FinishIngestRun(ctx context.Context, arg FinishIngestRunParams
 	return err
 }
 
+const latestSyncRunAt = `-- name: LatestSyncRunAt :one
+SELECT started_at FROM ingest_runs
+WHERE timeframe = $1 AND status IN ('ok', 'empty')
+ORDER BY started_at DESC
+LIMIT 1
+`
+
+func (q *Queries) LatestSyncRunAt(ctx context.Context, timeframe string) (time.Time, error) {
+	row := q.db.QueryRow(ctx, latestSyncRunAt, timeframe)
+	var started_at time.Time
+	err := row.Scan(&started_at)
+	return started_at, err
+}
+
 const listIngestRuns = `-- name: ListIngestRuns :many
 SELECT id, symbol_id, timeframe, range_start, range_end, status, http_status, bars, rejected, error, started_at, finished_at, duration_ms FROM ingest_runs
 WHERE symbol_id = $1 AND timeframe = $2

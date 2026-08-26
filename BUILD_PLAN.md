@@ -340,10 +340,8 @@ committed, so a typo is exactly the thing a loud failure should catch. The trap 
 an explicit root list, never by shape alone.
 
 **Contract roots are seeded as symbols, `tracked = false`.** `WIN` as a row is the continuous
-back-adjusted series the rollover work will eventually build; the dated contracts (`WINZ25`) are
-separate symbols that only exist once a Pro token can enumerate them. Phase 11 left rollover
-undone for exactly this reason — the root is a row with nothing behind it until Phase 12 finds
-out whether brapi serves futures candles at all.
+back-adjusted series Phase 11 will build; the dated contracts (`WINZ25`) are separate symbols that
+only exist once a Pro token can enumerate them.
 
 **Every HTTP response counts against quota, including retries.** A 429 that gets retried three
 times is recorded as three requests. Pessimistic on purpose — the number exists to stop a backfill
@@ -2440,15 +2438,19 @@ here are its best case rather than its expected one. Listed in Phase 11.
 
 - [x] Parameter sweeps: ranges per input, grid execution across the worker pool, results heatmap
 - [x] Walk-forward analysis: rolling in-sample optimize → out-of-sample test
-- [x] Portfolio backtests: one strategy across a basket, shared capital
+- [x] Portfolio backtests: one strategy across a basket, shared capital. **Shipped working and
+      unreachable:** a comma-separated list in the symbol field was the whole interface, and
+      nothing said so. Phase 12 gave it a placeholder, permanent help text and a live basket
+      summary, and fixed the `max_positions` default it had been quietly overriding
 - [x] Strategy sharing / public read-only links
 - [x] Borrow cost on short positions, and the hard-to-borrow list that says which shorts were
       actually available
 - [x] Corporate actions that are not dividends: a split adjusts the share count, rather than being
       counted in `unpriced_actions` and skipped
-- [ ] **Futures: contract rollover and back-adjusted continuous series.** Deferred, and not for
-      effort: `data/contracts.json` names WIN, IND, WDO and DOL, but nothing ingests a futures
-      candle, so there is no series to back-adjust. This waits on data, not on code
+- [x] **Futures: contract rollover and back-adjusted continuous series.** Was deferred on data,
+      not effort. **Phase 12 found it under `/v2/futures/*`: ~14 months of daily settlement
+      history per contract, expired ones included** — see the closed open question below. Built on
+      `settlement` rather than OHLC, because that is the only column populated on every bar
 
 *(Four migrations. `00014_carry_and_actions.sql` adds `backtest_trades.borrow_cents` and
 `split_cash_cents`; `00015_backtest_baskets.sql` adds `backtest_run_symbols`,
@@ -2637,7 +2639,7 @@ sweep panel is where those points belong anyway.
 >   `//nosec`, so the guarantee survives a cap being raised later.
 > - **`MaxPositions` caps what is held, not how many trades a run takes**, and the first version
 >   of that test asserted the wrong thing. The behaviour is right and is now pinned by a test of
->   its own; the reasoning is under "the seat count is checked at the fill" above.
+>   its own; the reasoning is three paragraphs up.
 >
 > The one bug in the engine itself was caught by doing the arithmetic for a test, not by reading
 > the code: **rewriting `entryCents` after a split double-counts the cash from a fractional
@@ -2680,35 +2682,191 @@ then decide whether to keep paying.
 Everything before this ran on four free tickers. This phase is mostly *operational* — the code
 is already written and timeframe-agnostic. Do it against the production box, not a laptop.
 
-- [ ] Upgrade the token. Set `BRAPI_TOKEN`; nothing else changes
-- [ ] Write out the current IBOV, IBXX and SMLL compositions into `data/indexes/`, commit them, and
+- [x] Upgrade the token. Set `BRAPI_TOKEN`; nothing else changes
+- [x] Write out the current IBOV, IBXX and SMLL compositions into `data/indexes/`, commit them, and
       run the sync to set `tracked = true` on the union. No judgment call, no screen to defend.
-      Expect ~200 tickers
-- [ ] Sanity-check the union size before spending anything. Every symbol is ~103k rows and a
+      ~~Expect ~200 tickers~~ **150.** Pulled from B3's own `GetPortfolioDay` rather than
+      transcribed: IBOV 77, IBXX 98, SMLL 107, as of 2026-08-26
+- [x] Sanity-check the union size before spending anything. Every symbol is ~103k rows and a
       permanent share of the daily sync budget; if the number comes back at 400 rather than 200,
-      something double-counted the overlap
-- [ ] Dry-run the backfill: no writes, just count the requests it *would* make and print the total
-      against the 500k quota. Run this before the real one, every time
-- [ ] Determine the real chunk size empirically — how much 5m history brapi returns per request.
+      something double-counted the overlap. **It came back under, not over:** IBOV is a complete
+      subset of IBXX (77 of 77), and 55 of SMLL's 107 are also in IBXX, so `98 + (107 - 55) = 150`.
+      The safe direction, and it cut the backfill by a quarter
+- [x] Dry-run the backfill: no writes, just count the requests it *would* make and print the total
+      against the 500k quota. Run this before the real one, every time. Note the printed
+      percentage is against Free's 15,000, not Pro's 500,000
+- [x] Determine the real chunk size empirically — how much 5m history brapi returns per request.
       The budget above assumed one month per request; measure it, don't assume it. **Floor: three
       months.** Phase 2 measured that a shorter window returns a different and wrong 5m series, so
       a one-month chunk is off the table regardless of what the quota arithmetic prefers. Confirm
       the defect's shape on Pro before the full run: fetch one symbol at two window sizes and
-      reconcile both folds against the stored `1d`
-- [ ] Backfill 1d first (cheap, works on any tier, and gives every symbol a usable chart
+      reconcile both folds against the stored `1d`.
+      **Measured on day one — record the figures here:** the depth a single `range` request
+      actually returned, and whether the `<3mo` defect survived on Pro at real depth. The code
+      issues one range request per symbol either way (`IntradayRange`), so the budget question is
+      settled; what is worth keeping is the depth number, because it is what a future re-backfill
+      would be sized against
+- [x] Backfill 1d first (cheap, works on any tier, and gives every symbol a usable chart
       immediately), then 5m
-- [ ] Run it resumable and rate-limited, in the background, in the container. It will take hours.
+- [x] Run it resumable and rate-limited, in the background, in the container. It will take hours.
       `docker compose run -d --rm app backfill --universe`
-- [ ] Verify: row counts per symbol against expected session counts, gap report clean, spot-check
+- [x] Verify: row counts per symbol against expected session counts, gap report clean, spot-check
       a known split (e.g. a 1:2) to confirm adjustment landed
-- [ ] `pg_dump` immediately afterwards and get it off the box. **This dump is the expensive
+- [x] `pg_dump` immediately afterwards and get it off the box. **This dump is the expensive
       artifact** — it cost a month of Pro. Losing it means paying again
-- [ ] Then decide: stay on Pro (~R$116/mo, 5m stays current) or drop to Free (daily keeps
-      updating, 5m freezes at the backfill date, historical backtests unaffected). Flip
-      `INGEST_INTRADAY=false` and the scheduler stops asking for what Free won't serve
+- [x] Then decide: stay on Pro (~R$116/mo, 5m stays current) or drop to Free (daily keeps
+      updating, 5m freezes at the backfill date, historical backtests unaffected).
+      **Staying on Pro.** `INGEST_ENABLED=true`, `INGEST_INTRADAY=true`: ~150 requests per
+      timeframe per session, ~6,300/month against 500,000. Dropping to Free later is
+      `INGEST_INTRADAY=false` and nothing else
+- [x] **Futures, unplanned.** The Pro token also answered Phase 11's blocked item — see the closed
+      open question below. `sync-futures` loads ~14 months of daily settlement history for
+      WIN/IND/WDO/DOL, and the continuous series is wired through to the engine and the chart
 
 **Done when:** the universe is loaded, verified, dumped off-box, and the daily sync runs inside
 the Free quota.
+
+**Done.** 150 tracked symbols, backfilled and verified, dumped off-box, and the in-process
+scheduler keeping both timeframes current on Pro. The phase also cost more code than "mostly
+operational" predicted: a ticker-classification fix, the scheduler itself, and the whole futures
+path that the token made possible for the first time.
+
+### Decisions this phase forced
+
+**The scheduler is in-process, because the alternative puts the cadence outside the artefact that
+gets deployed.** A host crontab calling `docker compose run` works, but it lives on the box rather
+than in the image, so a rebuilt server is one forgotten `crontab -e` away from a universe that
+silently stops updating — and nothing in the app would know. `INGEST_ENABLED` starts a goroutine
+next to the backtest worker pool, which means the cadence ships, restarts, and is visible in the
+same logs as everything else. It defaults to **off**: a dev box pulling this change must not
+quietly begin calling brapi.
+
+**It fires off the calendar, not off a clock.** The trigger is `session.Close + INGEST_CLOSE_DELAY`
+resolved through the same `Calendar` the resampler and gap report use, so holidays and B3's short
+sessions are handled by construction rather than by a cron expression that has never heard of
+Carnaval. A poll every five minutes asks the calendar whether the moment has passed; there is no
+wall-clock schedule to drift out of agreement with the trading day.
+
+**"Already synced today" is a database question, not a variable.** `restart: unless-stopped` plus
+an in-memory flag would re-run the whole sync on every container restart after the close.
+`LatestSyncRunAt` reads the newest `ok`/`empty` row in `ingest_runs` for the timeframe and compares
+it against today's trigger, so the guard survives restarts and crash loops — and it reuses the
+ledger the ingester was already writing rather than inventing a second source of truth. A backfill
+earlier the same morning does not satisfy it, because the comparison is against the close, not
+against the date.
+
+**The scheduled path and the CLI are the same call.** The goroutine builds `SyncOptions` and calls
+`Ingester.Sync`, which is what `sync-candles` does — so trap 11's rule that 5m is always a `3mo`
+range request trimmed client-side is obeyed automatically, and can't drift in one path only.
+`TrackedSymbols` moved onto the ingester for the same reason: the universe was defined in
+`resolveSymbols` in `main`, and the scheduler would have been a second place to get the
+futures filter right.
+
+**Futures got their own tables, because they are not candles.** `candles` is `NOT NULL CHECK
+(open > 0)` with `CHECK (low <= open)`, and brapi never serves an `open` for a futures contract —
+not on a thin far-dated one, not on the eighty heavily-traded front-month sessions of `WINZ25`.
+Storing futures there meant either fabricating every open or dropping the constraint for equities
+too, and the second option trades away a real guarantee on 20M rows to accommodate a series that
+is not OHLC in the first place. `futures_contracts` and `futures_quotes` keep `settlement` `NOT
+NULL` — it is populated on 100% of bars — and leave the traded fields nullable, which is what the
+data actually is.
+
+**The continuous series is derived on read, like the resampler.** Nothing stores a back-adjusted
+series. `BuildContinuous` picks the front contract per session by nearest unexpired
+`expiration`, records a roll when that selection changes, and walks backwards applying the
+cumulative settlement gap. The roll day itself belongs to the *new* contract and keeps the smaller
+offset — the adjustment applies to bars strictly before it, which is the off-by-one this method
+invites. Storing the output would mean rewriting every historical row at every roll, and 15m/30m/1h
+already established that derived-on-read is this codebase's answer to that.
+
+**The roll gap is measured on the last session where both contracts exist, not on the roll day.**
+The first implementation looked for the outgoing and incoming contract in the same day's quotes and
+subtracted. On the roll day the outgoing contract has already expired and has no bar at all, so it
+found nothing and returned a gap of zero — for every roll, silently, which makes back-adjustment a
+no-op and yields a continuous series that is visibly smooth and completely wrong. `rollGap` now
+walks backwards from the roll to the most recent session carrying a settlement for *both* symbols,
+and reports `Measured` so an unmeasurable roll is distinguishable from a genuinely zero one.
+Verified against the store: all eight WIN rolls measure between 1,254 and 4,553 points, 0.74% to
+2.46%, which is the carry spread a bimonthly Ibovespa contract should show.
+
+**Futures fill at the next settlement, because there is no open to fill at.** Trap 1 makes
+lookahead structural by signalling on the close of *i* and filling at the open of *i+1*. That rule
+has no futures equivalent, so the futures path signals on settlement of *i* and fills at settlement
+of *i+1*: the one-bar delay is preserved, and the price used is the only one guaranteed to exist.
+Filling at the traded close instead would silently vary the basis bar to bar and vanish entirely on
+thin contracts — `INDV26` traded 20 of 250 sessions.
+
+**A futures root is a symbol, so nothing downstream had to learn what a future is.** WIN, IND,
+WDO and DOL were already rows in `symbols` from `contracts.json`. The continuous series is loaded
+through `CandleService`, which means the engine, the candles endpoint, the indicator pipeline, the
+chart and the symbol search all reached it without a futures-shaped branch in any of them. The
+routing is one `Kind` check in three places — the runner, the candles handler, and the prime
+lookup — and everything past those points is the equity path unchanged.
+
+**Settlement bars are emitted as `O = H = L = C`, which makes the fill rule fall out for free.**
+The engine signals on the close of *i* and fills at the open of *i+1* (trap 1). Give it a bar
+whose open and close are both that session's settlement and "fill at the open of *i+1*" *is*
+"fill at the settlement of *i+1*" — the rule chosen for futures, implemented by construction
+rather than by a second code path that could drift. The degenerate range is also honest: one price
+is genuinely all that is known for the session, so a stop or limit can only trigger on settlement
+crossing it, which is the conservative reading. `barOf` needed no change; `closeOf` already
+existed for end-of-run exits and proved the shape works.
+
+**The chart draws futures as a line, because a candlestick of `O = H = L = C` is a row of dashes.**
+Selecting a futures root switches the chart to line mode and pins the timeframe to `1d`, and the
+header carries a `continuous · back-adjusted` tag. Without it the series looks like an ordinary
+price history, and back-adjusted futures prices are *not* prices anyone traded — the further back
+you read, the further they sit from what printed. The tag is the only thing standing between that
+series and a reader who assumes otherwise.
+
+**The regression tests were written from the bugs, not from the design.** `BuildContinuous`
+shipped with two defects that produced smooth, believable, wrong curves: a roll gap measured on
+the roll day, where the outgoing contract no longer exists, and a back-adjustment that gave the
+roll day itself the larger offset. Neither raised an error and neither looked wrong on a chart;
+both were found by querying the stored data in SQL and comparing against what the arithmetic
+should have produced. The tests now pin that comparison — the load-bearing one asserts that a
+day-over-day move in the adjusted series equals the move of the contract actually held that day,
+across rolls included, which is the property back-adjustment exists to provide and which fails
+under either bug. Known-good values from the real store are the fixture's reference: WIN rolls 8
+times over the window with gaps of 1,254 to 4,553 points.
+
+**A feature with no affordance is not shipped.** Baskets worked end to end — API, engine, panel —
+and went unused because the only hint that a symbol field took more than one symbol appeared
+*after* you had already typed a comma: the label pluralised, and the "held at once" control
+un-hid. Both are feedback for someone who already knew. What was missing was a placeholder and one
+sentence of help, which is a smaller change than any of the machinery behind it. Worth checking
+the same way elsewhere: every control whose existence is conditional on the state it configures is
+invisible to the person who needs it most.
+
+**The daily futures pass reads the term structure, not the contracts.** `sync-futures` walks
+every contract to build history — 51 list pages plus one request each — which is right once and
+absurd daily. `/v2/futures/term-structure?asset=WIN` returns every live expiration for a root in
+a single call with the same fields, so the tail is **one request per root**: four a day against
+113. Expired contracts never move again, so they belong to the backfill and are simply absent
+here. `SyncTail` reads the roots already in `futures_contracts` and spends nothing when none have
+been backfilled, which is why `INGEST_FUTURES` can default on without costing a deployment that
+never wanted futures.
+
+**The tail's repeat guard is in memory, and that asymmetry is deliberate.** The candle sync reads
+`ingest_runs` because a duplicate costs ~300 requests; the futures tail costs four, so a mark on
+the scheduler is proportionate and the worst a restart can do is re-upsert rows that do not
+change. Guarding it *somehow* was not optional though — the scheduler polls every five minutes,
+so an unguarded tail would have re-run every five minutes from the close until midnight.
+
+**The help pages document the traps, not the buttons.** A tour of which field does what would
+have been shorter and useless: the controls are already labelled. What a user cannot see is that a
+signal fills at the *next* bar's open, that a blank profit factor means too few trades rather than
+no losses, that the in-sample column of a walk-forward is the one to distrust, or that the universe
+is survivorship-biased by an amount nobody can measure. So the four pages — strategies, backtests,
+sweeps, and a fourth on the data itself — are mostly this file's traps section rewritten for
+someone who did not build the thing. The data page exists because those caveats belong to no
+panel: they are true of every run, and there was nowhere in the UI that said so.
+
+**Cost on Pro is not the constraint, and never was.** 150 symbols × 2 timeframes × ~21 sessions is
+~6,300 requests a month against Pro's 500,000 — and still inside Free's 15,000. Decision 5 said
+quota pressure is cadence rather than history; at one request per symbol per timeframe per day,
+even the intraday half is affordable. What Pro actually buys after the backfill is a 5m head that
+keeps extending, which is a data question, not a budget one.
 
 ---
 
@@ -2806,6 +2964,45 @@ Collected here because the code carries no comments — this is where the reason
     and never halt. The first backfill of illiquid tickers will surface zero-volume bars, missing
     sessions and stale prices that four blue chips never exercised. Expect Phase 12 to find bugs
     in code that looked finished.
+15. **A B3 ticker root can contain a digit.** `ClassifyTicker` originally spelled the root as
+    `[A-Z]{4}`, which is true of every ticker the four development names exercised and false of
+    `B3SA3` — B3's own listing, and 3.3% of the IBOV carteira loaded in Phase 12. The root is now
+    `[A-Z][A-Z0-9]{3}`: still anchored to a leading letter, so a numeric-leading string is
+    rejected rather than read as a stock. This is the first bug trap 14 predicted, and it surfaced
+    before a single request was spent because `sync-symbols` refuses the whole admission list on
+    one unclassifiable ticker instead of silently dropping it. Keep that behaviour — a symbol
+    missing from the universe is invisible, and an index constituent that never gets ingested is
+    a backtest quietly running on 149 names while reporting 150.
+16. **`IND` and `DOL` are live US tickers on the equities endpoint.** Futures belong to
+    `/v2/futures/*`, but nothing stops the ordinary `/quote/{ticker}` path being handed a root —
+    and it does not fail. `IND` returns the Xtrackers Nifty 500 India ETF and `DOL` the WisdomTree
+    True Developed International Fund, both with real prices that would validate and store
+    cleanly. Nothing fetches them today because three separate guards skip `KindFuture`:
+    enrichment, the stale-symbol scan, and `TrackedSymbols`. Those guards are load-bearing for
+    correctness, not tidiness — remove any one and a symbol labelled *Mini Ibovespa Futuro*
+    silently fills with a US ETF's candles. Futures ingestion, when it comes, addresses concrete
+    contracts on the futures endpoint; a bare root must never reach `/quote`.
+17. **`/v2/futures/list` hides expired contracts, and the omission is silent.** The default listing
+    returns only contracts still trading — 1,758 of them, 69 across WIN/IND/WDO/DOL.
+    `includeExpired=true` returns 5,026, and 113 for those roots inside the history window. The
+    difference is not cosmetic: a continuous series assembled from currently-listed contracts only
+    picks the same nearest-unexpired contract for every session in the window, so it back-adjusts
+    across **zero rolls** and looks entirely reasonable while being a single contract's settlement
+    curve wearing a continuous series' name. `sync-futures` defaults `--include-expired` to true
+    and the report says which mode ran. The tell that something is wrong is a roll count of zero
+    over a window that spans a quarter.
+18. **A futures roll has no overlap on the roll day itself.** The outgoing contract's last bar is
+    its expiration day; the next session it does not exist. Anything comparing the two contracts —
+    a roll gap, a liquidity crossover, a spread — has to look at the session *before* the roll,
+    where both still settle. Measured on the roll day it finds one contract and silently produces
+    a zero.
+19. **A default that the API and the UI disagree about is a silent wrong answer.** `max_positions`
+    reads `0` as "hold every name in the basket", which is what someone typing a list of tickers
+    means. The panel defaulted the field to `1` and always sent it, so a three-name basket ran as
+    a one-at-a-time rotation — a different strategy entirely, with nothing on screen saying so and
+    no error to notice. The field now follows the basket until it is explicitly changed. The
+    general shape: a default that exists in two places will eventually only be right in one of
+    them, and the failure is a plausible number rather than a crash.
 
 ---
 
@@ -2837,10 +3034,55 @@ Collected here because the code carries no comments — this is where the reason
   wrong intraday series comes back. Free retention caps at ~60 days, so whether the `<3mo` defect
   persists on Pro at real depth cannot be tested until the token is upgraded — check it first, by
   fetching one symbol at two window sizes and reconciling both against the stored `1d`.
-- **Futures coverage.** brapi lists futures as Pro-only; whether WIN/WDO come with usable
-  intraday history is unverified. This is the one Phase 11 item that shipped undone, and it
-  cannot even be started until the Pro month answers this: back-adjusting a continuous series
-  needs a series.
+  **Measured on day one of the Pro month; the figures were not written down.** The budget half is
+  moot either way — the code issues one range request per symbol — but the depth number is what a
+  future re-backfill would be sized against, so it is worth recovering from the run's output or
+  by re-measuring one symbol while the token is live.
+- ~~**Futures coverage.**~~ **Answered in Phase 12: available, with a settlement series rather
+  than an OHLC one.** Futures live in their own namespace, `/api/v2/futures/*`. The equities
+  `/quote/{ticker}` and `/available` endpoints know nothing about it and answer *Nenhum resultado
+  encontrado* for `WINV26` — a routing answer that is easy to misread as a coverage answer.
+  - `/v2/futures/list` pages 1,758 contracts (100/page ceiling) with full metadata. Every root
+    `contracts.json` names is present, and the `contractMultiplier` agrees with the seeded
+    `point_value`: WIN 0.2, IND 1, WDO 10, DOL 50.
+  - `/v2/futures/quote?symbols=` takes a comma-separated list, one settled bar per contract for
+    the previous session. Good for the daily tail, useless for history.
+  - `/v2/futures/historical?symbol=` — **singular `symbol`**, and passing `symbols` fails
+    validation in a way that looks like a missing route. Returns `future.history`, newest first.
+    It defaults to a one-year window; **`startDate` extends it**, down to a hard floor of
+    **2025-06-10** that no parameter reaches past. `range`, `limit` and `from`/`to` are ignored.
+  - **Expired contracts keep their history.** `WINZ25`, `WINQ26` and `WINM26` all return complete
+    series after expiry, which is what makes a continuous series buildable *retroactively* rather
+    than only forward.
+  - **`settlement` is populated on 100% of bars, on every contract.** Traded fields — high, low,
+    close, average, volume, trades — are null on sessions where that contract did not trade, and
+    the density tracks liquidity: `WINZ25` traded 133 of 135 sessions, the far-dated `INDV26`
+    only 20 of 250.
+  - **`open` is null on every bar of every contract, always** — including the 80 heavily-traded
+    front-month sessions of `WINZ25`. `referencePrice` likewise. This is not a gap to fill in; the
+    field is never served.
+
+  - **There is no intraday futures data, and it is not a parameter away.** `/v2/futures/historical`
+    ignores `interval`, `granularity`, `resolution`, `timeframe` and `period` alike — the response
+    is the same 250 daily bars stamped at midnight. No `intraday`, `candles`, `chart`, `bars` or
+    `ticks` route exists under the namespace. And the equities `/quote/{ticker}` path, which does
+    serve 5m for stocks, returns `NOT_FOUND` for a confirmed-real contract symbol: the two
+    namespaces do not overlap. Futures are daily on brapi, full stop, so `LoadContinuous` rejects
+    any timeframe but `1d` and the chart pins futures to it.
+
+  So Phase 11's item is unblocked, on ~14 months of daily settlement history. The continuous
+  series must be built on `settlement`, which is the complete column and is in any case the
+  conventional basis for back-adjustment. It cannot be built on OHLC: there is no `open` at all,
+  and the other four are sparse exactly where liquidity is thin.
+- **The futures contract multiplier reaches storage but not the engine.** `futures_contracts`
+  records it and `ContinuousSeries` carries it, but position sizing reads `lot_size` off the
+  `symbols` row, so a WIN position is sized as though one unit is worth one point when it is worth
+  R$0.20. A futures run therefore produces a plausible equity curve whose P&L magnitude is wrong
+  by the multiplier — 5x for WIN, 10x for WDO, 50x for DOL. It is worse in a mixed basket, where
+  the error is not uniform and so the allocation between futures and equities is wrong rather than
+  just the totals. The open part is where the multiplier belongs: folded into `Symbol.LotSize` at
+  load, carried as a distinct field through sizing, or applied at the P&L boundary. Until it is
+  decided, futures numbers are directionally right and absolutely wrong.
 - **Backfilling admissions made after the Pro month.** A ticker promoted into an index later can
   only be given 5m history while a Pro token is live. On Free it gets daily from admission
   onward and nothing intraday, ever. If the plan is to drop to Free, either accept a universe

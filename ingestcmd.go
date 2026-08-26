@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -45,15 +44,12 @@ func openIngester(ctx context.Context, cfg config.Config, log *slog.Logger) (*pg
 	return pool, ingest.NewIngester(pool, client, calendar, log), nil
 }
 
-func resolveSymbols(ctx context.Context, pool *pgxpool.Pool, tickers string, universe bool) ([]database.Symbol, error) {
-	queries := database.New(pool)
-
+func resolveSymbols(ctx context.Context, ingester *ingest.Ingester, tickers string, universe bool) ([]database.Symbol, error) {
 	if universe {
-		symbols, err := queries.ListTrackedSymbols(ctx)
+		symbols, err := ingester.TrackedSymbols(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("listing tracked symbols: %w", err)
+			return nil, err
 		}
-		symbols = slices.DeleteFunc(symbols, func(s database.Symbol) bool { return market.Kind(s.Kind) == market.KindFuture })
 		if len(symbols) == 0 {
 			return nil, fmt.Errorf("no tracked symbols; run sync-symbols first")
 		}
@@ -72,7 +68,7 @@ func resolveSymbols(ctx context.Context, pool *pgxpool.Pool, tickers string, uni
 
 	symbols := make([]database.Symbol, 0, len(names))
 	for _, name := range names {
-		symbol, err := queries.GetSymbolByTicker(ctx, name)
+		symbol, err := ingester.SymbolByTicker(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf("looking up %s: %w", name, err)
 		}

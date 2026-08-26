@@ -48,7 +48,7 @@ func runCandles(ctx context.Context, cfg config.Config, log *slog.Logger, args [
 
 	calendar := ingester.Calendar()
 
-	symbols, err := resolveSymbols(runCtx, pool, *ticker, false)
+	symbols, err := resolveSymbols(runCtx, ingester, *ticker, false)
 	if err != nil {
 		return err
 	}

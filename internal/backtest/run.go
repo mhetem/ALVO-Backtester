@@ -31,9 +31,12 @@ func sideName(short bool) string {
 type Symbol struct {
 	ID       int64
 	Ticker   string
+	Kind     string
 	LotSize  int64
 	TickSize float64
 }
+
+func (s Symbol) Future() bool { return market.Kind(s.Kind) == market.KindFuture }
 
 type Instrument struct {
 	Symbol  Symbol

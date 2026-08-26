@@ -225,6 +225,16 @@ func (r *Runner) execute(ctx context.Context, row database.BacktestRun) (Result,
 	ids := make([]int64, 0, len(basket))
 
 	for _, symbol := range basket {
+		if symbol.Future() {
+			instrument, err := r.futuresInstrument(ctx, symbol, timeframe, from, to, plan.PrimeBars)
+			if err != nil {
+				return Result{}, err
+			}
+			instruments = append(instruments, instrument)
+			ids = append(ids, symbol.ID)
+			continue
+		}
+
 		series, err := r.candles.Load(ctx, symbol.ID, timeframe, from, to, MaxBars)
 		if err != nil {
 			return Result{}, err
@@ -278,6 +288,7 @@ func (r *Runner) basket(ctx context.Context, row database.BacktestRun) ([]Symbol
 			basket = append(basket, Symbol{
 				ID:       held.ID,
 				Ticker:   held.Ticker,
+				Kind:     held.Kind,
 				LotSize:  int64(held.LotSize),
 				TickSize: held.TickSize,
 			})
@@ -293,6 +304,7 @@ func (r *Runner) basket(ctx context.Context, row database.BacktestRun) ([]Symbol
 	return []Symbol{{
 		ID:       primary.ID,
 		Ticker:   primary.Ticker,
+		Kind:     primary.Kind,
 		LotSize:  int64(primary.LotSize),
 		TickSize: primary.TickSize,
 	}}, nil
@@ -556,4 +568,40 @@ func curveAt(curve []int64, i int) *int64 {
 		return nil
 	}
 	return &curve[i]
+}
+
+func (r *Runner) futuresInstrument(ctx context.Context, symbol Symbol, tf market.Timeframe, from, to time.Time, primeBars int) (Instrument, error) {
+	series, err := r.candles.LoadContinuous(ctx, symbol.Ticker, tf, from.AddDate(-2, 0, 0), to, market.ContinuousOptions{BackAdjust: true})
+	if err != nil {
+		return Instrument{}, err
+	}
+
+	prime, candles := splitAt(series.Candles, from, primeBars)
+
+	if len(candles) < 2 {
+		return Instrument{}, fmt.Errorf("%s has %d continuous %s bars between %s and %s: a run needs at least two",
+			symbol.Ticker, len(candles), tf, from.Format(time.DateOnly), to.Format(time.DateOnly))
+	}
+
+	return Instrument{Symbol: symbol, Prime: prime, Candles: candles}, nil
+}
+
+func splitAt(candles []market.Candle, from time.Time, primeBars int) ([]market.Candle, []market.Candle) {
+	cut := len(candles)
+	for i, candle := range candles {
+		if !candle.TS.Before(from) {
+			cut = i
+			break
+		}
+	}
+
+	prime := candles[:cut]
+	if primeBars > 0 && len(prime) > primeBars {
+		prime = prime[len(prime)-primeBars:]
+	}
+	if primeBars <= 0 {
+		prime = nil
+	}
+
+	return prime, candles[cut:]
 }

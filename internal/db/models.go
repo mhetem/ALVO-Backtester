@@ -117,6 +117,34 @@ type ChartLayout struct {
 	Name      string    `json:"name"`
 }
 
+type FuturesContract struct {
+	ID          int64      `json:"id"`
+	Symbol      string     `json:"symbol"`
+	Root        string     `json:"root"`
+	Description *string    `json:"description"`
+	Segment     *string    `json:"segment"`
+	Multiplier  float64    `json:"multiplier"`
+	LotSize     int32      `json:"lot_size"`
+	Currency    string     `json:"currency"`
+	Isin        *string    `json:"isin"`
+	FirstTrade  *time.Time `json:"first_trade"`
+	LastTrade   *time.Time `json:"last_trade"`
+	Expiration  time.Time  `json:"expiration"`
+	SeenAt      time.Time  `json:"seen_at"`
+}
+
+type FuturesQuote struct {
+	ContractID int64     `json:"contract_id"`
+	Day        time.Time `json:"day"`
+	Settlement float64   `json:"settlement"`
+	High       *float64  `json:"high"`
+	Low        *float64  `json:"low"`
+	Close      *float64  `json:"close"`
+	Average    *float64  `json:"average"`
+	Volume     *int64    `json:"volume"`
+	Trades     *int64    `json:"trades"`
+}
+
 type IngestRun struct {
 	ID         int64      `json:"id"`
 	SymbolID   int64      `json:"symbol_id"`

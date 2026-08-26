@@ -21,7 +21,7 @@ JOIN symbols s ON s.id = r.symbol_id
 WHERE r.id = $1 AND r.user_id = $2;
 
 -- name: ListBacktestRunSymbols :many
-SELECT rs.ord, s.id, s.ticker, s.lot_size, s.tick_size
+SELECT rs.ord, s.id, s.ticker, s.kind, s.lot_size, s.tick_size
 FROM backtest_run_symbols rs
 JOIN symbols s ON s.id = rs.symbol_id
 WHERE rs.run_id = $1

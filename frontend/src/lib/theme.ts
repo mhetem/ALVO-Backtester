@@ -189,3 +189,15 @@ export function barOptions(tone: Palette): DeepPartial<BarStyleOptions & SeriesO
     priceFormat,
   };
 }
+
+export function settlementOptions(
+  tone: Palette,
+): DeepPartial<LineStyleOptions & SeriesOptionsCommon> {
+  return {
+    color: tone.up,
+    lineWidth: 2,
+    priceLineVisible: false,
+    crosshairMarkerVisible: true,
+    priceFormat,
+  };
+}

@@ -340,7 +340,7 @@ func (q *Queries) ListBacktestEquity(ctx context.Context, arg ListBacktestEquity
 }
 
 const listBacktestRunSymbols = `-- name: ListBacktestRunSymbols :many
-SELECT rs.ord, s.id, s.ticker, s.lot_size, s.tick_size
+SELECT rs.ord, s.id, s.ticker, s.kind, s.lot_size, s.tick_size
 FROM backtest_run_symbols rs
 JOIN symbols s ON s.id = rs.symbol_id
 WHERE rs.run_id = $1
@@ -351,6 +351,7 @@ type ListBacktestRunSymbolsRow struct {
 	Ord      int32   `json:"ord"`
 	ID       int64   `json:"id"`
 	Ticker   string  `json:"ticker"`
+	Kind     string  `json:"kind"`
 	LotSize  int32   `json:"lot_size"`
 	TickSize float64 `json:"tick_size"`
 }
@@ -368,6 +369,7 @@ func (q *Queries) ListBacktestRunSymbols(ctx context.Context, runID uuid.UUID) (
 			&i.Ord,
 			&i.ID,
 			&i.Ticker,
+			&i.Kind,
 			&i.LotSize,
 			&i.TickSize,
 		); err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,20 @@ func (i *Ingester) Calendar() *market.Calendar { return i.cal }
 
 func (i *Ingester) Reachable(ticker string) bool {
 	return i.client.HasToken() || brapi.IsFreeTicker(ticker)
+}
+
+func (i *Ingester) TrackedSymbols(ctx context.Context) ([]database.Symbol, error) {
+	symbols, err := i.queries.ListTrackedSymbols(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing tracked symbols: %w", err)
+	}
+	return slices.DeleteFunc(symbols, func(s database.Symbol) bool {
+		return market.Kind(s.Kind) == market.KindFuture
+	}), nil
+}
+
+func (i *Ingester) SymbolByTicker(ctx context.Context, ticker string) (database.Symbol, error) {
+	return i.queries.GetSymbolByTicker(ctx, ticker)
 }
 
 type ChunkRequest struct {

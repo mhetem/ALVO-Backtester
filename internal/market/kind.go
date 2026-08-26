@@ -63,9 +63,9 @@ func DefaultTickSize(kind Kind) float64 {
 var (
 	indexPattern  = regexp.MustCompile(`^\^[A-Z0-9]{3,6}$`)
 	cryptoPattern = regexp.MustCompile(`^[A-Z0-9]{2,10}-[A-Z]{3}$`)
-	bdrPattern    = regexp.MustCompile(`^[A-Z]{4}(31|32|33|34|35|39)$`)
-	unitPattern   = regexp.MustCompile(`^[A-Z]{4}11$`)
-	stockPattern  = regexp.MustCompile(`^[A-Z]{4}[345678]$`)
+	bdrPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9]{3}(31|32|33|34|35|39)$`)
+	unitPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9]{3}11$`)
+	stockPattern  = regexp.MustCompile(`^[A-Z][A-Z0-9]{3}[345678]$`)
 	futurePattern = regexp.MustCompile(`^([A-Z]{3})[FGHJKMNQUVXZ]\d{2}$`)
 )
 

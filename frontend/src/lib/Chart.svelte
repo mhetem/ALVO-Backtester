@@ -49,6 +49,7 @@
     histogramOptions,
     lineOptions,
     palette,
+    settlementOptions,
     type Palette,
   } from './theme';
 
@@ -143,6 +144,12 @@
   }
 
   function seriesData(list: Bar[]) {
+    if (mode === 'line') {
+      return list.map((bar) => ({
+        time: toChartTime(bar.time) as UTCTimestamp,
+        value: bar.close,
+      }));
+    }
     return list.map((bar) => ({
       time: toChartTime(bar.time) as UTCTimestamp,
       open: bar.open,
@@ -239,7 +246,9 @@
     series =
       mode === 'bars'
         ? chart.addSeries(BarSeries, barOptions(tone), 0)
-        : chart.addSeries(CandlestickSeries, candlestickOptions(tone), 0);
+        : mode === 'line'
+          ? chart.addSeries(LineSeries, settlementOptions(tone), 0)
+          : chart.addSeries(CandlestickSeries, candlestickOptions(tone), 0);
     drawn = mode;
     markers = createSeriesMarkers(series, []);
 
@@ -296,7 +305,13 @@
     }
     const tone = palette();
     chart.applyOptions(chartOptions(tone, timeframe !== '1d'));
-    series?.applyOptions(mode === 'bars' ? barOptions(tone) : candlestickOptions(tone));
+    series?.applyOptions(
+      mode === 'bars'
+        ? barOptions(tone)
+        : mode === 'line'
+          ? settlementOptions(tone)
+          : candlestickOptions(tone),
+    );
     drawMarkers();
   }
 

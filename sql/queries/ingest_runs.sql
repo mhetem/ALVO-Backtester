@@ -29,6 +29,12 @@ WHERE symbol_id = $1 AND timeframe = $2
 ORDER BY started_at DESC
 LIMIT $3;
 
+-- name: LatestSyncRunAt :one
+SELECT started_at FROM ingest_runs
+WHERE timeframe = $1 AND status IN ('ok', 'empty')
+ORDER BY started_at DESC
+LIMIT 1;
+
 -- name: ListRecentIngestFailures :many
 SELECT * FROM ingest_runs
 WHERE status = 'failed' AND started_at >= $1

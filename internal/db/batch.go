@@ -90,3 +90,78 @@ func (b *UpsertCandlesBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }
+
+const upsertFuturesQuotes = `-- name: UpsertFuturesQuotes :batchexec
+INSERT INTO futures_quotes (
+    contract_id, day, settlement, high, low, close, average, volume, trades
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
+)
+ON CONFLICT (contract_id, day) DO UPDATE SET
+    settlement = EXCLUDED.settlement,
+    high       = COALESCE(EXCLUDED.high, futures_quotes.high),
+    low        = COALESCE(EXCLUDED.low, futures_quotes.low),
+    close      = COALESCE(EXCLUDED.close, futures_quotes.close),
+    average    = COALESCE(EXCLUDED.average, futures_quotes.average),
+    volume     = COALESCE(EXCLUDED.volume, futures_quotes.volume),
+    trades     = COALESCE(EXCLUDED.trades, futures_quotes.trades)
+`
+
+type UpsertFuturesQuotesBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type UpsertFuturesQuotesParams struct {
+	ContractID int64     `json:"contract_id"`
+	Day        time.Time `json:"day"`
+	Settlement float64   `json:"settlement"`
+	High       *float64  `json:"high"`
+	Low        *float64  `json:"low"`
+	Close      *float64  `json:"close"`
+	Average    *float64  `json:"average"`
+	Volume     *int64    `json:"volume"`
+	Trades     *int64    `json:"trades"`
+}
+
+func (q *Queries) UpsertFuturesQuotes(ctx context.Context, arg []UpsertFuturesQuotesParams) *UpsertFuturesQuotesBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.ContractID,
+			a.Day,
+			a.Settlement,
+			a.High,
+			a.Low,
+			a.Close,
+			a.Average,
+			a.Volume,
+			a.Trades,
+		}
+		batch.Queue(upsertFuturesQuotes, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &UpsertFuturesQuotesBatchResults{br, len(arg), false}
+}
+
+func (b *UpsertFuturesQuotesBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *UpsertFuturesQuotesBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
