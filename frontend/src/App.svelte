@@ -5,8 +5,10 @@
   import Chart from './lib/Chart.svelte';
   import IndicatorPanel from './lib/IndicatorPanel.svelte';
   import IndicatorPicker from './lib/IndicatorPicker.svelte';
+  import SharedStrategy from './lib/SharedStrategy.svelte';
   import SignIn from './lib/SignIn.svelte';
   import StrategyEditor from './lib/StrategyEditor.svelte';
+  import SweepPanel from './lib/SweepPanel.svelte';
   import SymbolSearch from './lib/SymbolSearch.svelte';
   import {
     describe,
@@ -41,6 +43,7 @@
     type SavedLayout,
   } from './lib/layouts';
   import { logout, resume, type User } from './lib/session';
+  import { sharedToken } from './lib/strategy';
   import { seriesPalette } from './lib/theme';
 
   let symbol = $state('PETR4');
@@ -68,9 +71,14 @@
   let signInOpen = $state(false);
   let strategyOpen = $state(false);
   let backtestOpen = $state(false);
+  let sweepOpen = $state(false);
 
   let marks = $state<TradeMark[]>([]);
-  let marksFor = $state('');
+  let marksFor = $state<string[]>([]);
+
+  // A share link is its own page: it needs no session, and dropping the workspace around it
+  // is what makes the link openable by someone who has never signed in here.
+  const shared = sharedToken(window.location.pathname);
 
   let layoutsFor = '';
   let restored = false;
@@ -84,7 +92,7 @@
 
   // Markers belong to the symbol they were run against; charting another ticker with
   // them still drawn would put fills on candles they never touched.
-  const shownMarks = $derived(marksFor === symbol ? marks : []);
+  const shownMarks = $derived(marksFor.includes(symbol) ? marks.filter((mark) => mark.symbol === symbol) : []);
 
   const dirty = $derived(
     activeLayout === null
@@ -238,9 +246,9 @@
     writeWorking(toStored(indicators), null);
   }
 
-  function showTrades(trades: Trade[], ticker: string) {
+  function showTrades(trades: Trade[], tickers: string[]) {
     marks = marksOf(trades);
-    marksFor = ticker;
+    marksFor = tickers;
   }
 
   function signedIn(who: User) {
@@ -312,6 +320,9 @@
 
 </script>
 
+{#if shared}
+  <SharedStrategy token={shared} />
+{:else}
 <main>
   <header>
     <div class="brand">
@@ -368,6 +379,9 @@
       </button>
       <button type="button" class:on={backtestOpen} onclick={() => (backtestOpen = true)}>
         Backtests{shownMarks.length > 0 ? ` · ${shownMarks.length}` : ''}
+      </button>
+      <button type="button" class:on={sweepOpen} onclick={() => (sweepOpen = true)}>
+        Sweeps
       </button>
     </div>
 
@@ -453,6 +467,11 @@
     onTrades={showTrades}
     onClose={() => (backtestOpen = false)}
   />
+{/if}
+
+{#if sweepOpen}
+  <SweepPanel {symbol} {timeframe} {user} onClose={() => (sweepOpen = false)} />
+{/if}
 {/if}
 
 <style>

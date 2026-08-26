@@ -16,8 +16,11 @@
     inputNames,
     inputRefs,
     nextInputName,
+    shareStrategy,
+    shareURL,
     specFromJSON,
     specToJSON,
+    unshareStrategy,
     updateStrategy,
     validateSpec,
     PRICE_FIELDS,
@@ -28,6 +31,7 @@
     type PlanSummary,
     type RuleDraft,
     type SavedStrategy,
+    type Share,
     type SideDraft,
     type SizingType,
     type SpecDraft,
@@ -43,7 +47,7 @@
 
   let strategies = $state<SavedStrategy[]>([]);
   let activeId = $state<string | null>(null);
-  let name = $state('EMA cross');
+  let name = $state('');
   let description = $state('');
   let version = $state(1);
   let spec = $state<SpecDraft>(blankSpec());
@@ -55,6 +59,8 @@
   let pointer = $state('');
   let note = $state<string | null>(null);
   let busy = $state(false);
+  let share = $state<Share | null>(null);
+  let copied = $state(false);
 
   const names = $derived(inputNames(spec));
   const refs = $derived(inputRefs(spec, catalog));
@@ -79,8 +85,9 @@
   function startNew() {
     reset();
     activeId = null;
-    name = 'EMA cross';
+    name = '';
     description = '';
+    share = null;
     version = 1;
     spec = blankSpec();
     plan = null;
@@ -94,6 +101,7 @@
     description = saved.description;
     version = saved.version;
     plan = saved.plan ?? null;
+    share = saved.share ?? null;
 
     try {
       spec = specFromJSON(saved.spec);
@@ -163,6 +171,42 @@
     }
   }
 
+  // A link is stored in the clear rather than hashed, because the editor has to be able to
+  // show it again. It grants read access to one spec and nothing else, which is a different
+  // thing from a credential.
+  function toggleShare() {
+    const id = activeId;
+    if (!id) {
+      return;
+    }
+
+    void run(async () => {
+      if (share) {
+        await unshareStrategy(id);
+        share = null;
+        note = 'That link no longer opens anything.';
+        return;
+      }
+
+      share = await shareStrategy(id);
+      note = 'Anyone with this link can read the spec.';
+    });
+  }
+
+  function copyLink() {
+    if (!share) {
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(shareURL(share))
+      .then(() => {
+        copied = true;
+        setTimeout(() => (copied = false), 1500);
+      })
+      .catch((cause: unknown) => fail(cause));
+  }
+
   function adopt(saved: SavedStrategy) {
     strategies = [...strategies.filter((held) => held.id !== saved.id), saved].sort((a, b) =>
       a.name.localeCompare(b.name),
@@ -170,6 +214,7 @@
     activeId = saved.id;
     version = saved.version;
     plan = saved.plan ?? null;
+    share = saved.share ?? null;
     note = `Saved as version ${saved.version}.`;
   }
 
@@ -352,7 +397,13 @@
         <div class="identity">
           <label>
             <span>Name</span>
-            <input bind:value={name} type="text" maxlength="80" spellcheck="false" />
+            <input
+              bind:value={name}
+              type="text"
+              maxlength="80"
+              spellcheck="false"
+              placeholder="Name this strategy"
+            />
           </label>
           <label class="wide">
             <span>Description</span>
@@ -362,6 +413,20 @@
             <span class="version">version {version}</span>
           {/if}
         </div>
+
+        {#if activeId}
+          <div class="share">
+            <button type="button" class="plain" onclick={toggleShare} disabled={busy}>
+              {share ? 'Stop sharing' : 'Share a read-only link'}
+            </button>
+            {#if share}
+              <input class="link" type="text" readonly value={shareURL(share)} />
+              <button type="button" class="plain" onclick={copyLink}>
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            {/if}
+          </div>
+        {/if}
 
         {#if tab === 'json'}
           <label class="raw">
@@ -441,6 +506,12 @@
                 </button>
               </div>
             {/each}
+
+            {#if spec.inputs.length === 0}
+              <p class="hint">
+                An input is one indicator this strategy reads. Add the ones its rules compare.
+              </p>
+            {/if}
 
             <button type="button" class="add" onclick={addInput}>Add an input</button>
           </div>
@@ -792,6 +863,45 @@
     color: var(--muted);
     font-size: 0.7rem;
     padding-bottom: 0.35rem;
+  }
+
+  .share {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .share .plain {
+    font: inherit;
+    font-size: 0.72rem;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .share .plain:hover:not(:disabled) {
+    color: var(--fg);
+  }
+
+  .share .plain:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .share .link {
+    flex: 1 1 18rem;
+    min-width: 0;
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--muted);
   }
 
   h3 {

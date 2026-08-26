@@ -1,0 +1,8 @@
+{
+  "source": "B3 BTB (Banco de Titulos) - indicative annual borrow rates for the taker",
+  "basis": 252,
+  "through": "2026-08-26",
+  "default_annual_pct": 2.0,
+  "rates": {},
+  "unavailable": []
+}

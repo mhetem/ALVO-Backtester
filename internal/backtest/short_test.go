@@ -197,11 +197,10 @@ func TestAShortPaysTheDividendItBorrowedThrough(t *testing.T) {
 	plain := runOf(t, shortHoldSpec, testSymbol, 1_000_000, holdBars)
 
 	paid, err := Run(Request{
-		Plan:      planOf(t, shortHoldSpec),
-		Symbol:    testSymbol,
-		Timeframe: market.TF1d,
-		Capital:   1_000_000,
-		Candles:   adjusted(holdBars, []float64{0.95, 0.95, 1.0, 1.0}),
+		Plan:        planOf(t, shortHoldSpec),
+		Instruments: oneOf(testSymbol, adjusted(holdBars, []float64{0.95, 0.95, 1.0, 1.0})),
+		Timeframe:   market.TF1d,
+		Capital:     1_000_000,
 	})
 	if err != nil {
 		t.Fatalf("running the backtest: %v", err)

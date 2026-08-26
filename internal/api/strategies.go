@@ -53,6 +53,7 @@ type strategyBody struct {
 	Version     int32           `json:"version"`
 	Spec        json.RawMessage `json:"spec"`
 	Plan        *planBody       `json:"plan,omitempty"`
+	Share       *shareBody      `json:"share,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
@@ -242,7 +243,7 @@ func (s *Server) handleDeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if stillReferenced(err) {
 			respondError(w, r, http.StatusConflict,
-				"this strategy has backtest runs, which hold the spec they ran — delete the runs first")
+				"this strategy has backtest runs or sweeps, which hold the spec they ran — delete those first")
 			return
 		}
 		s.logError(r, "deleting strategy", err)
@@ -367,7 +368,7 @@ func describeLeg(leg strategy.Leg) legBody {
 }
 
 func storedStrategy(row database.Strategy, plan *planBody) strategyBody {
-	return strategyBody{
+	body := strategyBody{
 		ID:          row.ID,
 		Name:        row.Name,
 		Description: row.Description,
@@ -377,6 +378,12 @@ func storedStrategy(row database.Strategy, plan *planBody) strategyBody {
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
 	}
+	if row.ShareToken != nil {
+		share := shareOf(row)
+		body.Share = &share
+	}
+
+	return body
 }
 
 func stillReferenced(err error) bool {

@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/symbols", s.handleSymbols)
 	mux.HandleFunc("GET /api/v1/candles", s.handleCandles)
 	mux.HandleFunc("GET /api/v1/indicators", s.handleIndicators)
+	mux.HandleFunc("GET /api/v1/shared/strategies/{token}", s.handleGetSharedStrategy)
 
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
@@ -60,12 +61,19 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleGetStrategy)))
 	mux.Handle("PUT /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateStrategy)))
 	mux.Handle("DELETE /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteStrategy)))
+	mux.Handle("POST /api/v1/strategies/{id}/share", s.requireAuth(http.HandlerFunc(s.handleShareStrategy)))
+	mux.Handle("DELETE /api/v1/strategies/{id}/share", s.requireAuth(http.HandlerFunc(s.handleUnshareStrategy)))
 
 	mux.Handle("GET /api/v1/backtests", s.requireAuth(http.HandlerFunc(s.handleListBacktests)))
 	mux.Handle("POST /api/v1/backtests", s.requireAuth(http.HandlerFunc(s.handleCreateBacktest)))
 	mux.Handle("GET /api/v1/backtests/{id}", s.requireAuth(http.HandlerFunc(s.handleGetBacktest)))
 	mux.Handle("GET /api/v1/backtests/{id}/trades", s.requireAuth(http.HandlerFunc(s.handleBacktestTrades)))
 	mux.Handle("GET /api/v1/backtests/{id}/equity", s.requireAuth(http.HandlerFunc(s.handleBacktestEquity)))
+
+	mux.Handle("GET /api/v1/sweeps", s.requireAuth(http.HandlerFunc(s.handleListSweeps)))
+	mux.Handle("POST /api/v1/sweeps", s.requireAuth(http.HandlerFunc(s.handleCreateSweep)))
+	mux.Handle("GET /api/v1/sweeps/{id}", s.requireAuth(http.HandlerFunc(s.handleGetSweep)))
+	mux.Handle("DELETE /api/v1/sweeps/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteSweep)))
 
 	mux.Handle("GET /api/v1/admin/brapi-usage", s.requireAuth(http.HandlerFunc(s.handleBrapiUsage)))
 

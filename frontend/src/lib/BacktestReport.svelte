@@ -30,6 +30,12 @@
   const index = $derived(metrics?.benchmarks?.find((b) => b.kind === 'index') ?? null);
   const marks = $derived([hold, index].filter((mark) => mark !== null));
 
+  // A single-symbol run has one row that says nothing the tiles above it do not; a basket
+  // is the only case where the breakdown is the point.
+  const perSymbol = $derived(
+    (metrics?.symbols ?? []).length > 1 ? (metrics?.symbols ?? []) : [],
+  );
+
   function tone(value: number): 'up' | 'down' | '' {
     if (value > 0) return 'up';
     if (value < 0) return 'down';
@@ -48,6 +54,11 @@
       return '—';
     }
     return `${m.avg_holding_bars.toFixed(1)} bars`;
+  }
+
+  function barShare(bars: number): number {
+    const total = metrics?.bars ?? 0;
+    return total > 0 ? (bars / total) * 100 : 0;
   }
 
   function drawdownSpan(m: Metrics): string {
@@ -119,7 +130,12 @@
       </div>
 
       {#if curve}
-        <EquityChart {curve} symbol={run.symbol} index={indexTicker} {intraday} />
+        <EquityChart
+          {curve}
+          symbol={(run.symbols ?? [run.symbol]).join(', ')}
+          index={indexTicker}
+          {intraday}
+        />
       {/if}
 
       <h4>Against buying and holding</h4>
@@ -171,6 +187,40 @@
         </tbody>
       </table>
 
+      {#if perSymbol.length > 0}
+        <h4>By symbol</h4>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Trades</th>
+              <th>Win rate</th>
+              <th>P&amp;L</th>
+              <th>Contribution</th>
+              <th>Fees</th>
+              <th>Dividends</th>
+              <th>Borrow</th>
+              <th>In market</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each perSymbol as stats (stats.symbol)}
+              <tr>
+                <td>{stats.symbol}</td>
+                <td>{stats.trades}</td>
+                <td>{stats.trades > 0 ? formatPct(stats.win_rate_pct, 1) : '—'}</td>
+                <td class={tone(stats.pnl_cents)}>{formatSignedCents(stats.pnl_cents)}</td>
+                <td class={tone(stats.contribution_pct)}>{formatSignedPct(stats.contribution_pct)}</td>
+                <td>{formatCents(stats.fees_cents)}</td>
+                <td>{stats.dividends_cents ? formatCents(stats.dividends_cents) : '—'}</td>
+                <td>{stats.borrow_cents ? formatCents(stats.borrow_cents) : '—'}</td>
+                <td>{formatPct(barShare(stats.bars_in_market), 1)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+
       <h4>Trades</h4>
       <dl class="pairs">
         <div><dt>Count</dt><dd>{metrics.trades}</dd></div>
@@ -201,7 +251,8 @@
           <dt>Exits</dt>
           <dd>
             {metrics.exits_by_signal} signal · {metrics.exits_by_stop} stop ·
-            {metrics.exits_by_target} target · {metrics.exits_at_end} at the end
+            {metrics.exits_by_target} target · {metrics.exits_at_end} at the end{#if metrics.exits_by_split > 0}
+              · {metrics.exits_by_split} cashed out by a corporate action{/if}
           </dd>
         </div>
         <div><dt>Fees paid</dt><dd>{formatCents(metrics.fees_cents)}</dd></div>
@@ -209,6 +260,29 @@
           <dt>Dividends credited</dt>
           <dd>{formatCents(metrics.dividends_cents)} over {metrics.dividend_events} ex-dates</dd>
         </div>
+        {#if metrics.borrow_cents > 0}
+          <div>
+            <dt>Borrow paid</dt>
+            <dd class="down">{formatCents(metrics.borrow_cents)} to hold the shorts</dd>
+          </div>
+        {/if}
+        {#if metrics.splits_applied > 0}
+          <div>
+            <dt>Splits applied</dt>
+            <dd>
+              {metrics.splits_applied} of {metrics.split_events}{#if metrics.split_cash_cents !== 0}
+                · {formatSignedCents(metrics.split_cash_cents)} settled in cash for fractions{/if}
+            </dd>
+          </div>
+        {/if}
+        {#if run.max_positions > 1}
+          <div>
+            <dt>Basket</dt>
+            <dd>
+              {(run.symbols ?? [run.symbol]).length} symbols, at most {run.max_positions} held at once
+            </dd>
+          </div>
+        {/if}
       </dl>
 
       <div class="caveats">
@@ -226,7 +300,27 @@
         {#if metrics.unpriced_actions > 0}
           <p class="warn">
             {metrics.unpriced_actions} bar{metrics.unpriced_actions === 1 ? '' : 's'} moved too far
-            to be a dividend — most likely a split. Nothing was credited for them.
+            to be a dividend and matched no ratio a split uses. Nothing was credited or adjusted
+            for them.
+          </p>
+        {/if}
+        {#if metrics.shorts_unavailable > 0}
+          <p class="warn">
+            {metrics.shorts_unavailable} short entr{metrics.shorts_unavailable === 1 ? 'y' : 'ies'}
+            found no shares to borrow on the day they would have filled.
+          </p>
+        {/if}
+        {#if metrics.crowded_out > 0}
+          <p class="warn">
+            {metrics.crowded_out} entr{metrics.crowded_out === 1 ? 'y' : 'ies'} fired with every
+            position already taken. Raising how many the basket may hold at once would have let
+            them in.
+          </p>
+        {/if}
+        {#if metrics.borrow_stale}
+          <p class="warn">
+            The run reaches past the end of the committed borrow curve, so short positions carry
+            the last known rate forward.
           </p>
         {/if}
         {#if metrics.ambiguous_bars > 0}
@@ -254,6 +348,9 @@
         <thead>
           <tr>
             <th>#</th>
+            {#if perSymbol.length > 0}
+              <th>Symbol</th>
+            {/if}
             <th>Side</th>
             <th>Qty</th>
             <th>Entry</th>
@@ -262,6 +359,7 @@
             <th>Price</th>
             <th>Fees</th>
             <th>Div</th>
+            <th>Borrow</th>
             <th>P&amp;L</th>
             <th>Reason</th>
           </tr>
@@ -270,6 +368,9 @@
           {#each trades as trade (trade.seq)}
             <tr>
               <td>{trade.seq}</td>
+              {#if perSymbol.length > 0}
+                <td>{trade.symbol}</td>
+              {/if}
               <td>{trade.side}</td>
               <td>{trade.qty}</td>
               <td>{formatStamp(Math.floor(new Date(trade.entry_ts).getTime() / 1000), intraday)}</td>
@@ -282,11 +383,16 @@
               <td>{trade.exit_price ? formatPrice(trade.exit_price) : '—'}</td>
               <td>{formatCents(trade.fees_cents)}</td>
               <td>{trade.dividends_cents ? formatCents(trade.dividends_cents) : '—'}</td>
+              <td>{trade.borrow_cents ? formatCents(trade.borrow_cents) : '—'}</td>
               <td class={tone(trade.pnl_cents)}>{formatSignedCents(trade.pnl_cents)}</td>
               <td>{trade.exit_reason ?? '—'}</td>
             </tr>
           {:else}
-            <tr><td colspan="11" class="missing">This run took no trades.</td></tr>
+            <tr>
+              <td colspan={perSymbol.length > 0 ? 13 : 12} class="missing">
+                This run took no trades.
+              </td>
+            </tr>
           {/each}
         </tbody>
       </table>

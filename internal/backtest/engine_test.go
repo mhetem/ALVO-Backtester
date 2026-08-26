@@ -110,6 +110,10 @@ func seriesOf(rows [][4]float64) []market.Candle {
 	return out
 }
 
+func oneOf(symbol Symbol, candles []market.Candle) []Instrument {
+	return []Instrument{{Symbol: symbol, Candles: candles}}
+}
+
 func flat(prices ...float64) [][4]float64 {
 	out := make([][4]float64, 0, len(prices))
 	for _, price := range prices {
@@ -138,11 +142,10 @@ func runOf(t *testing.T, spec string, symbol Symbol, capital int64, rows [][4]fl
 	t.Helper()
 
 	result, err := Run(Request{
-		Plan:      planOf(t, spec),
-		Symbol:    symbol,
-		Timeframe: market.TF1d,
-		Capital:   capital,
-		Candles:   seriesOf(rows),
+		Plan:        planOf(t, spec),
+		Instruments: oneOf(symbol, seriesOf(rows)),
+		Timeframe:   market.TF1d,
+		Capital:     capital,
 	})
 	if err != nil {
 		t.Fatalf("running the backtest: %v", err)
@@ -332,11 +335,10 @@ func TestTheSameSpecOverTheSameCandlesRunsIdentically(t *testing.T) {
 
 func TestARunNeedsABarToFillOn(t *testing.T) {
 	_, err := Run(Request{
-		Plan:      planOf(t, holdSpec),
-		Symbol:    testSymbol,
-		Timeframe: market.TF1d,
-		Capital:   1_000_000,
-		Candles:   seriesOf(flat(10)),
+		Plan:        planOf(t, holdSpec),
+		Instruments: oneOf(testSymbol, seriesOf(flat(10))),
+		Timeframe:   market.TF1d,
+		Capital:     1_000_000,
 	})
 	if err == nil {
 		t.Error("a single candle ran as a backtest, with no bar to fill an intent on")

@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"math"
+	"strings"
 	"time"
 
 	"github.com/mhetem/ALVO-Backtester/internal/market"
@@ -32,52 +33,127 @@ type Benchmark struct {
 	steps []float64
 }
 
-func holdBenchmark(req Request, dist distributions) Benchmark {
-	mark := Benchmark{Kind: BenchmarkHold, Symbol: req.Symbol.Ticker, Basis: dist.basis()}
+type holding struct {
+	qty       int64
+	last      float64
+	at        int
+	dividends int64
+	fees      int64
+}
 
-	costing := Costing{Costs: req.Plan.Spec.Costs, TickSize: req.Symbol.TickSize}
-	entry := costing.Fill(Order{Kind: OrderMarket, Side: Buy}, req.Candles[1].Open)
-	if entry <= 0 {
-		mark.Unavailable = "the second bar has no usable open"
+// The basket case is an equal-weight buy-and-hold: each symbol gets the same share of the
+// starting capital at its own second bar, carries the same costs, dividends and splits as
+// the engine, and is liquidated at the end. A one-symbol basket is the same code with the
+// division by one, which is why there is no second path for it.
+func holdBenchmark(req Request, books []*book, stamps []time.Time, basis string) Benchmark {
+	mark := Benchmark{Kind: BenchmarkHold, Symbol: basketName(books), Basis: basis}
+
+	if len(books) == 0 || len(stamps) < 2 {
+		mark.Unavailable = "there are no bars to hold"
 		return mark
 	}
 
-	lot := max(req.Symbol.LotSize, 1)
-	qty := affordableQty(req.Capital, entry, costing, lot)
-	if qty < 1 {
+	share := req.Capital / int64(len(books))
+	cash := req.Capital
+	legs := make([]holding, len(books))
+	curve := make([]int64, len(stamps))
+	bought := false
+
+	for i, ts := range stamps {
+		for k, b := range books {
+			leg := &legs[k]
+			if leg.at >= len(b.candles) || !b.candles[leg.at].TS.Equal(ts) {
+				continue
+			}
+
+			candle := b.candles[leg.at]
+			at := leg.at
+			leg.at++
+
+			if leg.qty > 0 {
+				if perShare := b.acts.dividendAt(at); perShare > 0 {
+					paid := int64(math.Round(float64(leg.qty) * perShare * 100))
+					cash += paid
+					leg.dividends += paid
+				}
+				if factor := b.acts.factorAt(at); factor > 0 {
+					price := candle.Open
+					if price <= 0 {
+						price = candle.Close
+					}
+					exact := float64(leg.qty) * factor
+					next := int64(math.Floor(exact + splitEpsilon))
+					cash += int64(math.Round((exact - float64(next)) * price * 100))
+					leg.qty = next
+				}
+			}
+
+			// The benchmark buys at the second bar, not the first: the engine structurally
+			// cannot fill before then, and handing buy-and-hold a bar no strategy can have
+			// would tax every strategy by something that is not the strategy.
+			if at == 1 && leg.qty == 0 {
+				entry := b.costing.Fill(Order{Kind: OrderMarket, Side: Buy}, candle.Open)
+				lot := max(b.symbol.LotSize, 1)
+				if qty := affordableQty(share, entry, b.costing, lot); entry > 0 && qty > 0 {
+					notional := b.costing.Notional(qty, entry)
+					fees := b.costing.Fees(notional)
+					cash -= notional + fees
+					leg.qty = qty
+					leg.fees = fees
+					bought = true
+				}
+			}
+
+			leg.last = candle.Close
+		}
+
+		value := cash
+		for k := range legs {
+			value += books[k].costing.Notional(legs[k].qty, legs[k].last)
+		}
+		curve[i] = value
+	}
+
+	if !bought {
 		mark.Unavailable = "starting capital does not cover one lot at the opening price"
 		return mark
 	}
 
-	notional := costing.Notional(qty, entry)
-	fees := costing.Fees(notional)
-	cash := req.Capital - notional - fees
-
-	mark.curve = make([]int64, len(req.Candles))
-	mark.curve[0] = req.Capital
-
-	dividends := int64(0)
-	for i := 1; i < len(req.Candles); i++ {
-		if perShare := dist.at(i); perShare > 0 {
-			dividends += int64(math.Round(float64(qty) * perShare * 100))
+	final := cash
+	for k, b := range books {
+		leg := &legs[k]
+		if leg.qty == 0 {
+			continue
 		}
-		mark.curve[i] = cash + dividends + costing.Notional(qty, req.Candles[i].Close)
+
+		exit := b.costing.Fill(Order{Kind: OrderMarket, Side: Sell}, leg.last)
+		notional := b.costing.Notional(leg.qty, exit)
+		fees := b.costing.Fees(notional)
+
+		final += notional - fees
+		leg.fees += fees
+	}
+	curve[len(curve)-1] = final
+
+	for _, leg := range legs {
+		mark.DividendsCents += leg.dividends
+		mark.FeesCents += leg.fees
 	}
 
-	exit := costing.Fill(Order{Kind: OrderMarket, Side: Sell}, req.Candles[len(req.Candles)-1].Close)
-	exitNotional := costing.Notional(qty, exit)
-	exitFees := costing.Fees(exitNotional)
-
-	last := len(req.Candles) - 1
-	mark.curve[last] = cash + dividends + exitNotional - exitFees
-
-	mark.DividendsCents = dividends
-	mark.FeesCents = fees + exitFees
+	mark.curve = curve
 
 	return mark
 }
 
-func indexBenchmark(req Request) Benchmark {
+func basketName(books []*book) string {
+	names := make([]string, 0, len(books))
+	for _, b := range books {
+		names = append(names, b.symbol.Ticker)
+	}
+	return strings.Join(names, ", ")
+}
+
+func indexBenchmark(req Request, stamps []time.Time) Benchmark {
 	mark := Benchmark{Kind: BenchmarkIndex, Symbol: req.IndexSymbol, Basis: BasisTotal}
 
 	if req.IndexSymbol == "" {
@@ -89,7 +165,7 @@ func indexBenchmark(req Request) Benchmark {
 		return mark
 	}
 
-	closes := alignCloses(req.Candles, req.Index)
+	closes := alignCloses(stamps, req.Index)
 	if closes == nil {
 		mark.Unavailable = "no " + req.IndexSymbol + " candle lines up with the first bar of the run"
 		return mark
@@ -104,18 +180,18 @@ func indexBenchmark(req Request) Benchmark {
 	return mark
 }
 
-func alignCloses(candles, index []market.Candle) []float64 {
+func alignCloses(stamps []time.Time, index []market.Candle) []float64 {
 	byTS := make(map[int64]float64, len(index))
 	for _, candle := range index {
 		byTS[candle.TS.Unix()] = candle.Close
 	}
 
-	closes := make([]float64, len(candles))
+	closes := make([]float64, len(stamps))
 	last := 0.0
 	matched := 0
 
-	for i, candle := range candles {
-		if close, ok := byTS[candle.TS.Unix()]; ok && close > 0 {
+	for i, ts := range stamps {
+		if close, ok := byTS[ts.Unix()]; ok && close > 0 {
 			last = close
 			matched++
 		}

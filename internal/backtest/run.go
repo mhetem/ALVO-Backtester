@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/mhetem/ALVO-Backtester/internal/indicator"
@@ -16,6 +17,7 @@ const (
 	ReasonSignal   = "signal"
 	ReasonStop     = "stop"
 	ReasonTarget   = "target"
+	ReasonSplit    = "split"
 	ReasonEndOfRun = "end_of_run"
 )
 
@@ -27,26 +29,37 @@ func sideName(short bool) string {
 }
 
 type Symbol struct {
+	ID       int64
 	Ticker   string
 	LotSize  int64
 	TickSize float64
 }
 
-type Request struct {
-	Plan        *strategy.Plan
-	Symbol      Symbol
-	Timeframe   market.Timeframe
-	Capital     int64
-	Prime       []market.Candle
-	Candles     []market.Candle
-	Index       []market.Candle
-	IndexSymbol string
-	Rates       *market.Rates
-	BarsPerYear float64
+type Instrument struct {
+	Symbol  Symbol
+	Prime   []market.Candle
+	Candles []market.Candle
 }
+
+type Request struct {
+	Plan         *strategy.Plan
+	Instruments  []Instrument
+	MaxPositions int
+	Timeframe    market.Timeframe
+	Capital      int64
+	Index        []market.Candle
+	IndexSymbol  string
+	Rates        *market.Rates
+	Borrow       *market.Borrow
+	BarsPerYear  float64
+}
+
+func (r Request) Basket() bool { return len(r.Instruments) > 1 }
 
 type Trade struct {
 	Seq            int32     `json:"seq"`
+	SymbolID       int64     `json:"-"`
+	Symbol         string    `json:"symbol"`
 	Side           string    `json:"side"`
 	Qty            int64     `json:"qty"`
 	EntryTS        time.Time `json:"entry_ts"`
@@ -56,6 +69,8 @@ type Trade struct {
 	PnLCents       int64     `json:"pnl_cents"`
 	FeesCents      int64     `json:"fees_cents"`
 	DividendsCents int64     `json:"dividends_cents"`
+	BorrowCents    int64     `json:"borrow_cents"`
+	SplitCashCents int64     `json:"split_cash_cents"`
 	ExitReason     string    `json:"exit_reason"`
 }
 
@@ -79,9 +94,21 @@ func Run(req Request) (Result, error) {
 	if req.Capital < 1 {
 		return Result{}, errors.New("a run needs starting capital above zero")
 	}
-	if len(req.Candles) < 2 {
-		return Result{}, errors.New("a run needs at least two candles: signals are read at one close and filled at the next open")
+	if len(req.Instruments) == 0 {
+		return Result{}, errors.New("a run needs at least one symbol")
 	}
+
+	for _, held := range req.Instruments {
+		if len(held.Candles) < 2 {
+			return Result{}, fmt.Errorf("%s has %d candles: a run needs at least two, since signals are read at one close and filled at the next open",
+				held.Symbol.Ticker, len(held.Candles))
+		}
+	}
+
+	if req.MaxPositions < 1 {
+		req.MaxPositions = len(req.Instruments)
+	}
+	req.MaxPositions = min(req.MaxPositions, len(req.Instruments))
 
 	return newEngine(req).run(), nil
 }

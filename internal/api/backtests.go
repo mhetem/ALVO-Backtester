@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 const (
 	maxActiveBacktests  = 5
+	maxBasket           = 20
 	minCapitalCents     = 10_000
 	maxCapitalCents     = 1_000_000_000_000
 	defaultCapitalCents = 10_000_000
@@ -27,22 +29,26 @@ type Queue interface {
 }
 
 type backtestRequest struct {
-	StrategyID   string `json:"strategy_id"`
-	Symbol       string `json:"symbol"`
-	Timeframe    string `json:"timeframe"`
-	Start        string `json:"start"`
-	End          string `json:"end"`
-	CapitalCents int64  `json:"capital_cents"`
+	StrategyID   string   `json:"strategy_id"`
+	Symbol       string   `json:"symbol"`
+	Symbols      []string `json:"symbols"`
+	Timeframe    string   `json:"timeframe"`
+	Start        string   `json:"start"`
+	End          string   `json:"end"`
+	CapitalCents int64    `json:"capital_cents"`
+	MaxPositions int      `json:"max_positions"`
 }
 
 type backtestBody struct {
 	ID           uuid.UUID       `json:"id"`
 	StrategyID   uuid.UUID       `json:"strategy_id"`
 	Symbol       string          `json:"symbol"`
+	Symbols      []string        `json:"symbols"`
 	Timeframe    string          `json:"timeframe"`
 	Start        string          `json:"start"`
 	End          string          `json:"end"`
 	CapitalCents int64           `json:"capital_cents"`
+	MaxPositions int32           `json:"max_positions"`
 	Status       string          `json:"status"`
 	Spec         json.RawMessage `json:"spec,omitempty"`
 	Metrics      json.RawMessage `json:"metrics,omitempty"`
@@ -50,6 +56,13 @@ type backtestBody struct {
 	CreatedAt    time.Time       `json:"created_at"`
 	StartedAt    *time.Time      `json:"started_at,omitempty"`
 	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
+}
+
+type runWindow struct {
+	timeframe market.Timeframe
+	start     time.Time
+	end       time.Time
+	capital   int64
 }
 
 func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
@@ -77,31 +90,20 @@ func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(body.Symbol) == "" {
-		respondError(w, r, http.StatusBadRequest, "symbol is required, as in PETR4")
-		return
-	}
-
-	loc := s.cal.Location()
-	start, err := parseDay(body.Start, "start", loc)
+	tickers, err := readBasket(body.Symbol, body.Symbols)
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	end, err := parseDay(body.End, "end", loc)
+	positions, err := readMaxPositions(body.MaxPositions, len(tickers))
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, err.Error())
-		return
-	}
-	if end.Before(start) {
-		respondError(w, r, http.StatusBadRequest, "end must not be before start")
 		return
 	}
 
-	capital, err := backtestCapital(body.CapitalCents)
-	if err != nil {
-		respondError(w, r, http.StatusBadRequest, err.Error())
+	window, ok := s.readWindow(w, r, timeframe, body.Start, body.End, body.CapitalCents)
+	if !ok {
 		return
 	}
 
@@ -121,7 +123,7 @@ func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	symbol, ok := s.findSymbol(w, r, body.Symbol)
+	basket, ok := s.findBasket(w, r, tickers)
 	if !ok {
 		return
 	}
@@ -138,16 +140,17 @@ func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := s.queries.CreateBacktestRun(r.Context(), database.CreateBacktestRunParams{
+	row, err := s.createRun(r.Context(), database.CreateBacktestRunParams{
 		UserID:       userID,
 		StrategyID:   strategyID,
 		Spec:         canonical,
-		SymbolID:     symbol.ID,
-		Timeframe:    timeframe.String(),
-		StartDate:    start,
-		EndDate:      end,
-		CapitalCents: capital,
-	})
+		SymbolID:     basket[0].ID,
+		Timeframe:    window.timeframe.String(),
+		StartDate:    window.start,
+		EndDate:      window.end,
+		CapitalCents: window.capital,
+		MaxPositions: int32Of(positions),
+	}, basket)
 	if err != nil {
 		s.logError(r, "queueing a backtest", err)
 		respondError(w, r, http.StatusInternalServerError, "internal server error")
@@ -159,64 +162,193 @@ func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Location", "/api/v1/backtests/"+row.ID.String())
-	respondJSON(w, r, http.StatusAccepted, queuedBacktest(row, symbol.Ticker))
+	respondJSON(w, r, http.StatusAccepted, queuedBacktest(row, tickersOf(basket)))
+}
+
+// A run and its basket are written together: a run row with no symbols would be claimed by
+// a worker that then has nothing to load, and the fallback to the primary symbol would
+// quietly turn a portfolio into a single-symbol run.
+func (s *Server) createRun(ctx context.Context, params database.CreateBacktestRunParams, basket []database.Symbol) (database.BacktestRun, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return database.BacktestRun{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	inTx := s.queries.WithTx(tx)
+
+	row, err := inTx.CreateBacktestRun(ctx, params)
+	if err != nil {
+		return database.BacktestRun{}, err
+	}
+
+	symbols := make([]database.CreateBacktestRunSymbolsParams, 0, len(basket))
+	for i, symbol := range basket {
+		symbols = append(symbols, database.CreateBacktestRunSymbolsParams{
+			RunID:    row.ID,
+			Ord:      int32(i),
+			SymbolID: symbol.ID,
+		})
+	}
+	if _, err := inTx.CreateBacktestRunSymbols(ctx, symbols); err != nil {
+		return database.BacktestRun{}, err
+	}
+
+	return row, tx.Commit(ctx)
 }
 
 func (s *Server) handleGetBacktest(w http.ResponseWriter, r *http.Request) {
-	userID, ok := UserIDFrom(r.Context())
+	run, ok := s.ownedRun(w, r)
 	if !ok {
-		respondUnauthorized(w, r, msgBadAccess)
 		return
 	}
 
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		respondError(w, r, http.StatusBadRequest, "backtest id must be a UUID")
-		return
-	}
-
-	row, err := s.queries.GetBacktestRun(r.Context(), database.GetBacktestRunParams{ID: id, UserID: userID})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			respondError(w, r, http.StatusNotFound, "no such backtest")
-			return
-		}
-		s.logError(r, "reading a backtest", err)
-		respondError(w, r, http.StatusInternalServerError, "internal server error")
-		return
-	}
-
-	respondJSON(w, r, http.StatusOK, storedBacktest(row))
+	respondJSON(w, r, http.StatusOK, storedBacktest(run, s.runTickers(r, run.ID, run.Ticker)))
 }
 
-func queuedBacktest(row database.BacktestRun, ticker string) backtestBody {
+func (s *Server) readWindow(w http.ResponseWriter, r *http.Request, timeframe market.Timeframe, from, to string, cents int64) (runWindow, bool) {
+	loc := s.cal.Location()
+	start, err := parseDay(from, "start", loc)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, err.Error())
+		return runWindow{}, false
+	}
+
+	end, err := parseDay(to, "end", loc)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, err.Error())
+		return runWindow{}, false
+	}
+	if end.Before(start) {
+		respondError(w, r, http.StatusBadRequest, "end must not be before start")
+		return runWindow{}, false
+	}
+
+	capital, err := backtestCapital(cents)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, err.Error())
+		return runWindow{}, false
+	}
+
+	return runWindow{timeframe: timeframe, start: start, end: end, capital: capital}, true
+}
+
+func (s *Server) findBasket(w http.ResponseWriter, r *http.Request, tickers []string) ([]database.Symbol, bool) {
+	basket := make([]database.Symbol, 0, len(tickers))
+
+	for _, ticker := range tickers {
+		symbol, ok := s.findSymbol(w, r, ticker)
+		if !ok {
+			return nil, false
+		}
+		basket = append(basket, symbol)
+	}
+
+	return basket, true
+}
+
+func (s *Server) runTickers(r *http.Request, id uuid.UUID, fallback string) []string {
+	rows, err := s.queries.ListBacktestRunSymbols(r.Context(), id)
+	if err != nil {
+		s.logError(r, "reading a run's basket", err)
+		return []string{fallback}
+	}
+	if len(rows) == 0 {
+		return []string{fallback}
+	}
+
+	tickers := make([]string, 0, len(rows))
+	for _, row := range rows {
+		tickers = append(tickers, row.Ticker)
+	}
+
+	return tickers
+}
+
+// One symbol or many: the request may name either, and a basket of one is not a portfolio,
+// it is the run every phase before this one already produced.
+func readBasket(single string, many []string) ([]string, error) {
+	raw := many
+	if len(raw) == 0 && strings.TrimSpace(single) != "" {
+		raw = []string{single}
+	}
+
+	tickers := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+
+	for _, ticker := range raw {
+		clean := strings.ToUpper(strings.TrimSpace(ticker))
+		if clean == "" || seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		tickers = append(tickers, clean)
+	}
+
+	switch {
+	case len(tickers) == 0:
+		return nil, errors.New("symbol is required, as in PETR4, or symbols for a basket")
+	case len(tickers) > maxBasket:
+		return nil, fmt.Errorf("at most %d symbols in one basket, got %d", maxBasket, len(tickers))
+	}
+
+	return tickers, nil
+}
+
+func readMaxPositions(want, basket int) (int, error) {
+	if want == 0 {
+		return basket, nil
+	}
+	if want < 1 || want > basket {
+		return 0, fmt.Errorf("max_positions is between 1 and the %d symbols in the basket, got %d", basket, want)
+	}
+	return want, nil
+}
+
+func tickersOf(basket []database.Symbol) []string {
+	tickers := make([]string, 0, len(basket))
+	for _, symbol := range basket {
+		tickers = append(tickers, symbol.Ticker)
+	}
+	return tickers
+}
+
+func queuedBacktest(row database.BacktestRun, tickers []string) backtestBody {
 	return backtestBody{
 		ID:           row.ID,
 		StrategyID:   row.StrategyID,
-		Symbol:       ticker,
+		Symbol:       tickers[0],
+		Symbols:      tickers,
 		Timeframe:    row.Timeframe,
 		Start:        row.StartDate.Format(time.DateOnly),
 		End:          row.EndDate.Format(time.DateOnly),
 		CapitalCents: row.CapitalCents,
+		MaxPositions: row.MaxPositions,
 		Status:       row.Status,
 		Spec:         json.RawMessage(row.Spec),
 		CreatedAt:    row.CreatedAt,
 	}
 }
 
-func listedBacktest(row database.ListBacktestRunsRow) backtestBody {
-	return storedBacktest(database.GetBacktestRunRow(row))
+func listedBacktest(row database.ListBacktestRunsRow, tickers []string) backtestBody {
+	return storedBacktest(database.GetBacktestRunRow(row), tickers)
 }
 
-func storedBacktest(row database.GetBacktestRunRow) backtestBody {
+func storedBacktest(row database.GetBacktestRunRow, tickers []string) backtestBody {
+	if len(tickers) == 0 {
+		tickers = []string{row.Ticker}
+	}
+
 	body := backtestBody{
 		ID:           row.ID,
 		StrategyID:   row.StrategyID,
-		Symbol:       row.Ticker,
+		Symbol:       tickers[0],
+		Symbols:      tickers,
 		Timeframe:    row.Timeframe,
 		Start:        row.StartDate.Format(time.DateOnly),
 		End:          row.EndDate.Format(time.DateOnly),
 		CapitalCents: row.CapitalCents,
+		MaxPositions: row.MaxPositions,
 		Status:       row.Status,
 		Spec:         json.RawMessage(row.Spec),
 		Metrics:      json.RawMessage(row.Metrics),

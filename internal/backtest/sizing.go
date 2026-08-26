@@ -6,13 +6,13 @@ import (
 	"github.com/mhetem/ALVO-Backtester/internal/strategy"
 )
 
-func (e *engine) size(price, stopDistance float64) int64 {
+func (e *engine) size(b *book, price, stopDistance float64) int64 {
 	if price <= 0 {
 		return 0
 	}
 
 	sizing := e.plan.Spec.Sizing
-	lot := max(e.req.Symbol.LotSize, 1)
+	lot := max(b.symbol.LotSize, 1)
 
 	var qty int64
 	switch sizing.Type {
@@ -29,28 +29,28 @@ func (e *engine) size(price, stopDistance float64) int64 {
 		qty = int64(math.Floor(float64(e.cash) * sizing.Value / 100 / stopDistance))
 	}
 
-	qty = min(qty, e.affordable(price))
+	qty = min(qty, e.affordable(b, price))
 	qty = qty / lot * lot
 
-	for qty > 0 && e.cost(qty, price) > e.cash {
+	for qty > 0 && e.cost(b, qty, price) > e.cash {
 		qty -= lot
 	}
 
 	return max(qty, 0)
 }
 
-func (e *engine) affordable(price float64) int64 {
-	budget := float64(e.cash - e.costing.Costs.BrokerageCents)
-	unit := price * 100 * (1 + e.costing.Costs.FeeBPS/10000)
+func (e *engine) affordable(b *book, price float64) int64 {
+	budget := float64(e.cash - b.costing.Costs.BrokerageCents)
+	unit := price * 100 * (1 + b.costing.Costs.FeeBPS/10000)
 	if budget <= 0 || unit <= 0 {
 		return 0
 	}
 	return int64(math.Floor(budget / unit))
 }
 
-func (e *engine) cost(qty int64, price float64) int64 {
-	notional := e.costing.Notional(qty, price)
-	return notional + e.costing.Fees(notional)
+func (e *engine) cost(b *book, qty int64, price float64) int64 {
+	notional := b.costing.Notional(qty, price)
+	return notional + b.costing.Fees(notional)
 }
 
 func sharesFor(cents int64, price float64) int64 {

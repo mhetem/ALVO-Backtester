@@ -1,10 +1,22 @@
 package backtest
 
-import (
-	"time"
+import "time"
 
-	"github.com/mhetem/ALVO-Backtester/internal/market"
-)
+type SymbolStats struct {
+	Symbol          string  `json:"symbol"`
+	Basis           string  `json:"basis"`
+	Trades          int     `json:"trades"`
+	Wins            int     `json:"wins"`
+	Losses          int     `json:"losses"`
+	WinRatePct      float64 `json:"win_rate_pct"`
+	PnLCents        int64   `json:"pnl_cents"`
+	FeesCents       int64   `json:"fees_cents"`
+	DividendsCents  int64   `json:"dividends_cents"`
+	BorrowCents     int64   `json:"borrow_cents"`
+	BorrowAnnualPct float64 `json:"borrow_annual_pct"`
+	BarsInMarket    int     `json:"bars_in_market"`
+	ContributionPct float64 `json:"contribution_pct"`
+}
 
 type Metrics struct {
 	Basis        string  `json:"basis"`
@@ -12,6 +24,7 @@ type Metrics struct {
 	BarsInMarket int     `json:"bars_in_market"`
 	TimeInMarket float64 `json:"time_in_market_pct"`
 	BarsPerYear  float64 `json:"bars_per_year"`
+	MaxPositions int     `json:"max_positions"`
 
 	CapitalCents     int64   `json:"capital_cents"`
 	FinalEquityCents int64   `json:"final_equity_cents"`
@@ -19,6 +32,9 @@ type Metrics struct {
 	FeesCents        int64   `json:"fees_cents"`
 	DividendsCents   int64   `json:"dividends_cents"`
 	DividendEvents   int     `json:"dividend_events"`
+	BorrowCents      int64   `json:"borrow_cents"`
+	BorrowStale      bool    `json:"borrow_stale"`
+	SplitCashCents   int64   `json:"split_cash_cents"`
 	ReturnPct        float64 `json:"return_pct"`
 	CAGRPct          float64 `json:"cagr_pct"`
 	VolatilityPct    float64 `json:"volatility_pct"`
@@ -48,31 +64,42 @@ type Metrics struct {
 	MaxConsecLosses  int      `json:"max_consecutive_losses"`
 	AvgHoldingBars   float64  `json:"avg_holding_bars"`
 
-	ExitsBySignal   int `json:"exits_by_signal"`
-	ExitsByStop     int `json:"exits_by_stop"`
-	ExitsByTarget   int `json:"exits_by_target"`
-	ExitsAtEnd      int `json:"exits_at_end"`
-	AmbiguousBars   int `json:"ambiguous_bars"`
-	SkippedEntries  int `json:"skipped_entries"`
-	UnadjustedBars  int `json:"unadjusted_bars"`
-	UnpricedActions int `json:"unpriced_actions"`
+	ExitsBySignal     int `json:"exits_by_signal"`
+	ExitsByStop       int `json:"exits_by_stop"`
+	ExitsByTarget     int `json:"exits_by_target"`
+	ExitsBySplit      int `json:"exits_by_split"`
+	ExitsAtEnd        int `json:"exits_at_end"`
+	AmbiguousBars     int `json:"ambiguous_bars"`
+	SkippedEntries    int `json:"skipped_entries"`
+	CrowdedOut        int `json:"crowded_out"`
+	ShortsUnavailable int `json:"shorts_unavailable"`
+	UnadjustedBars    int `json:"unadjusted_bars"`
+	UnpricedActions   int `json:"unpriced_actions"`
+	SplitEvents       int `json:"split_events"`
+	SplitsApplied     int `json:"splits_applied"`
 
-	Benchmarks []Benchmark `json:"benchmarks"`
+	Symbols    []SymbolStats `json:"symbols"`
+	Benchmarks []Benchmark   `json:"benchmarks"`
 }
 
 func (e *engine) summarize() {
-	e.metrics.Bars = len(e.req.Candles)
+	e.metrics.Bars = len(e.stamps)
 	e.metrics.Trades = len(e.trades)
 	e.metrics.FinalEquityCents = e.cash
-	e.metrics.Basis = e.dist.basis()
-	e.metrics.UnadjustedBars = e.dist.unadjusted
-	e.metrics.UnpricedActions = e.dist.unpriced
+	e.metrics.Basis = e.basis()
+
+	for _, b := range e.books {
+		e.metrics.UnadjustedBars += b.acts.unadjusted
+		e.metrics.UnpricedActions += b.acts.unpriced
+	}
 
 	if len(e.equity) > 0 {
 		e.metrics.FinalEquityCents = e.equity[len(e.equity)-1].Cents
 	}
 
 	e.tally()
+	e.describeSymbols()
+
 	e.metrics.PnLCents = e.metrics.FinalEquityCents - e.metrics.CapitalCents
 	if e.metrics.CapitalCents > 0 {
 		e.metrics.ReturnPct = float64(e.metrics.PnLCents) / float64(e.metrics.CapitalCents) * 100
@@ -81,21 +108,55 @@ func (e *engine) summarize() {
 		e.metrics.TimeInMarket = float64(e.metrics.BarsInMarket) / float64(e.metrics.Bars) * 100
 	}
 
-	periods := e.req.BarsPerYear
-	if periods <= 0 {
-		periods = market.TradingDaysPerYear
-	}
-	e.metrics.BarsPerYear = periods
+	e.metrics.BarsPerYear = e.periods()
 
 	if len(e.equity) < 2 {
 		return
 	}
 
 	steps := returnsOf(e.equity)
-	rf := e.riskFree(periods)
+	rf := e.riskFree(e.periods())
 
-	e.risk(steps, rf, periods)
-	e.compare(steps, rf, periods)
+	e.risk(steps, rf, e.periods())
+	e.compare(steps, rf, e.periods())
+}
+
+// A basket is on a total-return basis as soon as any of its symbols is: mixing the two
+// would be a comparison between different things, and saying so is the whole point of the
+// field. Only a run where nothing carried an adjusted close is a price return.
+func (e *engine) basis() string {
+	for _, b := range e.books {
+		if b.acts.basis() == BasisTotal {
+			return BasisTotal
+		}
+	}
+	return BasisPrice
+}
+
+func (e *engine) describeSymbols() {
+	last := time.Time{}
+	if len(e.stamps) > 0 {
+		last = e.stamps[len(e.stamps)-1]
+	}
+
+	e.metrics.Symbols = make([]SymbolStats, 0, len(e.books))
+	for _, b := range e.books {
+		stats := b.stats
+		if stats.Trades > 0 {
+			stats.WinRatePct = float64(stats.Wins) / float64(stats.Trades) * 100
+		}
+		if e.metrics.CapitalCents > 0 {
+			stats.ContributionPct = float64(stats.PnLCents) / float64(e.metrics.CapitalCents) * 100
+		}
+		if e.req.Borrow != nil {
+			stats.BorrowAnnualPct = e.req.Borrow.AnnualPct(b.symbol.Ticker, last)
+		}
+		e.metrics.Symbols = append(e.metrics.Symbols, stats)
+	}
+
+	if e.req.Borrow != nil && !last.IsZero() {
+		e.metrics.BorrowStale = !e.req.Borrow.Covers(last)
+	}
 }
 
 func (e *engine) tally() {
@@ -137,6 +198,8 @@ func (e *engine) tally() {
 			e.metrics.ExitsByStop++
 		case ReasonTarget:
 			e.metrics.ExitsByTarget++
+		case ReasonSplit:
+			e.metrics.ExitsBySplit++
 		case ReasonEndOfRun:
 			e.metrics.ExitsAtEnd++
 		}
@@ -166,9 +229,9 @@ func (e *engine) tally() {
 }
 
 func (e *engine) stampIndex() map[int64]int {
-	index := make(map[int64]int, len(e.req.Candles))
-	for i, candle := range e.req.Candles {
-		index[candle.TS.Unix()] = i
+	index := make(map[int64]int, len(e.stamps))
+	for i, ts := range e.stamps {
+		index[ts.Unix()] = i
 	}
 	return index
 }
@@ -214,13 +277,13 @@ func (e *engine) compare(steps, rf []float64, periods float64) {
 		stamps[i] = point.TS
 	}
 
-	hold := holdBenchmark(e.req, e.dist)
+	hold := holdBenchmark(e.req, e.books, e.stamps, e.basis())
 	hold.score(stamps, steps, rf, periods)
 	if hold.Unavailable == "" {
 		hold.ExcessPct = e.metrics.ReturnPct - hold.ReturnPct
 	}
 
-	index := indexBenchmark(e.req)
+	index := indexBenchmark(e.req, e.stamps)
 	index.score(stamps, steps, rf, periods)
 	if index.Unavailable == "" {
 		index.ExcessPct = e.metrics.ReturnPct - index.ReturnPct

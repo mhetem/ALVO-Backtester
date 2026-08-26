@@ -25,7 +25,7 @@
     symbol: string;
     timeframe: Timeframe;
     user: User | null;
-    onTrades: (trades: Trade[], symbol: string) => void;
+    onTrades: (trades: Trade[], symbols: string[]) => void;
     onClose: () => void;
   };
 
@@ -45,14 +45,24 @@
   let start = $state(defaultStart());
   let end = $state(today());
   let capital = $state(100000);
+  let maxPositions = $state(1);
 
   let error = $state<string | null>(null);
   let busy = $state(false);
   let loading = $state(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  // A comma separated list is a basket; one name is the single-symbol run every phase
+  // before this one produced, and the two go down the same path.
+  const basket = $derived(
+    runSymbol
+      .split(',')
+      .map((ticker) => ticker.trim().toUpperCase())
+      .filter((ticker) => ticker !== ''),
+  );
+
   const canRun = $derived(
-    user !== null && strategyId !== '' && runSymbol.trim() !== '' && !busy && start !== '' && end !== '',
+    user !== null && strategyId !== '' && basket.length > 0 && !busy && start !== '' && end !== '',
   );
 
   function today(): string {
@@ -105,7 +115,7 @@
       const [points, filled] = await Promise.all([fetchCurve(run.id), fetchTrades(run.id)]);
       curve = points;
       trades = filled;
-      onTrades(filled, run.symbol);
+      onTrades(filled, run.symbols ?? [run.symbol]);
     } catch (cause) {
       error = describe(cause);
       curve = null;
@@ -170,11 +180,12 @@
     try {
       const run = await launchBacktest({
         strategy_id: strategyId,
-        symbol: runSymbol.trim().toUpperCase(),
+        symbols: basket,
         timeframe: runTimeframe,
         start,
         end,
         capital_cents: Math.round(capital * 100),
+        max_positions: Math.min(maxPositions, basket.length),
       });
 
       runs = [run, ...runs];
@@ -246,8 +257,8 @@
           </select>
         </label>
 
-        <label class="short">
-          <span>Symbol</span>
+        <label>
+          <span>{basket.length > 1 ? 'Symbols' : 'Symbol'}</span>
           <input bind:value={runSymbol} spellcheck="false" autocapitalize="characters" />
         </label>
 
@@ -275,6 +286,13 @@
           <input type="number" min="100" step="100" bind:value={capital} />
         </label>
 
+        {#if basket.length > 1}
+          <label class="short">
+            <span>Held at once</span>
+            <input type="number" min="1" max={basket.length} bind:value={maxPositions} />
+          </label>
+        {/if}
+
         <button type="submit" class="run" disabled={!canRun}>
           {busy ? 'Queueing…' : 'Run'}
         </button>
@@ -293,7 +311,7 @@
                 class:on={run.id === active?.id}
                 onclick={() => void select(run)}
               >
-                <span class="who">{run.symbol} · {run.timeframe}</span>
+                <span class="who">{(run.symbols ?? [run.symbol]).join(', ')} · {run.timeframe}</span>
                 <span class="when">{run.start} → {run.end}</span>
                 <span
                   class="how"

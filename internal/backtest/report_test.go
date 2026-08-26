@@ -39,12 +39,12 @@ func curveOf(cents ...int64) []EquityPoint {
 	return points
 }
 
-func TestDistributionsReadTheAdjustmentRatio(t *testing.T) {
+func TestActionsReadTheAdjustmentRatio(t *testing.T) {
 	// A R$0.50 dividend goes ex on bar 2 against a R$10.00 previous close, so the ratio
 	// before it is 0.95 of the ratio after: 1 - 0.95/1.0 = 5% of 10.00.
 	candles := adjusted(holdBars, []float64{0.95, 0.95, 1.0, 1.0})
 
-	found := distributionsOf(candles)
+	found := actionsOf(candles)
 	if found.events != 1 {
 		t.Fatalf("events = %d, want exactly one (%v)", found.events, found.perShare)
 	}
@@ -53,35 +53,52 @@ func TestDistributionsReadTheAdjustmentRatio(t *testing.T) {
 	}
 
 	want := holdBars[1][3] * 0.05
-	if math.Abs(found.at(2)-want) > 1e-9 {
-		t.Errorf("dividend at bar 2 = %g, want %g", found.at(2), want)
+	if math.Abs(found.dividendAt(2)-want) > 1e-9 {
+		t.Errorf("dividend at bar 2 = %g, want %g", found.dividendAt(2), want)
 	}
 	for _, i := range []int{0, 1, 3} {
-		if found.at(i) != 0 {
-			t.Errorf("dividend at bar %d = %g, want none", i, found.at(i))
+		if found.dividendAt(i) != 0 {
+			t.Errorf("dividend at bar %d = %g, want none", i, found.dividendAt(i))
 		}
 	}
 }
 
-func TestDistributionsSkipASplitSizedJump(t *testing.T) {
-	// A 2:1 split reads as a 50% "dividend", which is past maxImpliedYield. It is counted
-	// rather than credited: paying it out would invent cash a shareholder never received.
+func TestActionsReadASplitSizedJumpAsASplit(t *testing.T) {
+	// A 2:1 split reads as a 50% "dividend", which is past maxImpliedYield. Crediting it
+	// would invent cash no shareholder received; it is a share count that doubled.
 	candles := adjusted(holdBars, []float64{0.5, 0.5, 1.0, 1.0})
 
-	found := distributionsOf(candles)
-	if found.unpriced != 1 {
-		t.Errorf("unpriced actions = %d, want one", found.unpriced)
+	found := actionsOf(candles)
+	if found.splits != 1 {
+		t.Fatalf("splits = %d, want one (%v)", found.splits, found.factor)
 	}
-	if found.events != 0 {
-		t.Errorf("events = %d, want none", found.events)
+	if found.events != 0 || found.unpriced != 0 {
+		t.Errorf("events = %d, unpriced = %d, want neither", found.events, found.unpriced)
 	}
-	if found.at(2) != 0 {
-		t.Errorf("credited %g per share for a split, want nothing", found.at(2))
+	if got := found.factorAt(2); math.Abs(got-2) > 1e-9 {
+		t.Errorf("split factor at bar 2 = %g, want 2", got)
+	}
+	if found.dividendAt(2) != 0 {
+		t.Errorf("credited %g per share for a split, want nothing", found.dividendAt(2))
 	}
 }
 
-func TestDistributionsFallBackToPriceReturn(t *testing.T) {
-	found := distributionsOf(seriesOf(holdBars))
+func TestActionsCountAJumpThatIsNeitherDividendNorSplit(t *testing.T) {
+	// 1 - 0.62 is a 38% implied yield: too large for a dividend, and 1/0.62 = 1.61 is not
+	// within a percent of any ratio a corporate action uses. It is counted, not acted on.
+	candles := adjusted(holdBars, []float64{0.62, 0.62, 1.0, 1.0})
+
+	found := actionsOf(candles)
+	if found.unpriced != 1 {
+		t.Errorf("unpriced actions = %d, want one", found.unpriced)
+	}
+	if found.splits != 0 || found.events != 0 {
+		t.Errorf("splits = %d, events = %d, want neither", found.splits, found.events)
+	}
+}
+
+func TestActionsFallBackToPriceReturn(t *testing.T) {
+	found := actionsOf(seriesOf(holdBars))
 	if found.basis() != BasisPrice {
 		t.Errorf("basis = %q, want %q when no bar carries adj_close", found.basis(), BasisPrice)
 	}
@@ -96,11 +113,10 @@ func TestDividendsLandInCashAndInTheTrade(t *testing.T) {
 	plain := runOf(t, dividendSpec, testSymbol, 1_000_000, holdBars)
 
 	paid, err := Run(Request{
-		Plan:      planOf(t, dividendSpec),
-		Symbol:    testSymbol,
-		Timeframe: market.TF1d,
-		Capital:   1_000_000,
-		Candles:   adjusted(holdBars, []float64{0.95, 0.95, 1.0, 1.0}),
+		Plan:        planOf(t, dividendSpec),
+		Instruments: oneOf(testSymbol, adjusted(holdBars, []float64{0.95, 0.95, 1.0, 1.0})),
+		Timeframe:   market.TF1d,
+		Capital:     1_000_000,
 	})
 	if err != nil {
 		t.Fatalf("running the backtest: %v", err)
@@ -258,10 +274,9 @@ func TestIndexBenchmarkTracksTheIndexClose(t *testing.T) {
 
 	result, err := Run(Request{
 		Plan:        planOf(t, holdSpec),
-		Symbol:      testSymbol,
+		Instruments: oneOf(testSymbol, seriesOf(holdBars)),
 		Timeframe:   market.TF1d,
 		Capital:     1_000_000,
-		Candles:     seriesOf(holdBars),
 		Index:       index,
 		IndexSymbol: "^BVSP",
 	})

@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -26,7 +27,7 @@ func (q *Queries) CountStrategies(ctx context.Context, userID uuid.UUID) (int64,
 const createStrategy = `-- name: CreateStrategy :one
 INSERT INTO strategies (user_id, name, description, spec)
 VALUES ($1, $2, $3, $4)
-RETURNING id, user_id, name, description, spec, version, created_at, updated_at
+RETURNING id, user_id, name, description, spec, version, created_at, updated_at, share_token, shared_at
 `
 
 type CreateStrategyParams struct {
@@ -53,6 +54,8 @@ func (q *Queries) CreateStrategy(ctx context.Context, arg CreateStrategyParams) 
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
+		&i.SharedAt,
 	)
 	return i, err
 }
@@ -75,8 +78,41 @@ func (q *Queries) DeleteStrategy(ctx context.Context, arg DeleteStrategyParams) 
 	return result.RowsAffected(), nil
 }
 
+const getSharedStrategy = `-- name: GetSharedStrategy :one
+SELECT id, name, description, version, spec, created_at, updated_at, shared_at
+FROM strategies
+WHERE share_token = $1
+`
+
+type GetSharedStrategyRow struct {
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Version     int32      `json:"version"`
+	Spec        []byte     `json:"spec"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	SharedAt    *time.Time `json:"shared_at"`
+}
+
+func (q *Queries) GetSharedStrategy(ctx context.Context, shareToken *string) (GetSharedStrategyRow, error) {
+	row := q.db.QueryRow(ctx, getSharedStrategy, shareToken)
+	var i GetSharedStrategyRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Version,
+		&i.Spec,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SharedAt,
+	)
+	return i, err
+}
+
 const getStrategy = `-- name: GetStrategy :one
-SELECT id, user_id, name, description, spec, version, created_at, updated_at FROM strategies
+SELECT id, user_id, name, description, spec, version, created_at, updated_at, share_token, shared_at FROM strategies
 WHERE id = $1 AND user_id = $2
 `
 
@@ -97,12 +133,14 @@ func (q *Queries) GetStrategy(ctx context.Context, arg GetStrategyParams) (Strat
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
+		&i.SharedAt,
 	)
 	return i, err
 }
 
 const listStrategies = `-- name: ListStrategies :many
-SELECT id, user_id, name, description, spec, version, created_at, updated_at FROM strategies
+SELECT id, user_id, name, description, spec, version, created_at, updated_at, share_token, shared_at FROM strategies
 WHERE user_id = $1
 ORDER BY name
 `
@@ -125,6 +163,8 @@ func (q *Queries) ListStrategies(ctx context.Context, userID uuid.UUID) ([]Strat
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ShareToken,
+			&i.SharedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -136,6 +176,69 @@ func (q *Queries) ListStrategies(ctx context.Context, userID uuid.UUID) ([]Strat
 	return items, nil
 }
 
+const shareStrategy = `-- name: ShareStrategy :one
+UPDATE strategies
+SET share_token = $3,
+    shared_at = NOW()
+WHERE id = $1 AND user_id = $2
+RETURNING id, user_id, name, description, spec, version, created_at, updated_at, share_token, shared_at
+`
+
+type ShareStrategyParams struct {
+	ID         uuid.UUID `json:"id"`
+	UserID     uuid.UUID `json:"user_id"`
+	ShareToken *string   `json:"share_token"`
+}
+
+func (q *Queries) ShareStrategy(ctx context.Context, arg ShareStrategyParams) (Strategy, error) {
+	row := q.db.QueryRow(ctx, shareStrategy, arg.ID, arg.UserID, arg.ShareToken)
+	var i Strategy
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Description,
+		&i.Spec,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShareToken,
+		&i.SharedAt,
+	)
+	return i, err
+}
+
+const unshareStrategy = `-- name: UnshareStrategy :one
+UPDATE strategies
+SET share_token = NULL,
+    shared_at = NULL
+WHERE id = $1 AND user_id = $2
+RETURNING id, user_id, name, description, spec, version, created_at, updated_at, share_token, shared_at
+`
+
+type UnshareStrategyParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) UnshareStrategy(ctx context.Context, arg UnshareStrategyParams) (Strategy, error) {
+	row := q.db.QueryRow(ctx, unshareStrategy, arg.ID, arg.UserID)
+	var i Strategy
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Description,
+		&i.Spec,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ShareToken,
+		&i.SharedAt,
+	)
+	return i, err
+}
+
 const updateStrategy = `-- name: UpdateStrategy :one
 UPDATE strategies
 SET name = $3,
@@ -144,7 +247,7 @@ SET name = $3,
     version = version + (spec IS DISTINCT FROM $5)::int,
     updated_at = NOW()
 WHERE id = $1 AND user_id = $2
-RETURNING id, user_id, name, description, spec, version, created_at, updated_at
+RETURNING id, user_id, name, description, spec, version, created_at, updated_at, share_token, shared_at
 `
 
 type UpdateStrategyParams struct {
@@ -173,6 +276,8 @@ func (q *Queries) UpdateStrategy(ctx context.Context, arg UpdateStrategyParams) 
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ShareToken,
+		&i.SharedAt,
 	)
 	return i, err
 }

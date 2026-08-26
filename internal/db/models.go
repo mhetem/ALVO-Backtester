@@ -34,6 +34,43 @@ type BacktestRun struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at"`
 	FinishedAt   *time.Time `json:"finished_at"`
+	MaxPositions int32      `json:"max_positions"`
+	SweepID      *uuid.UUID `json:"sweep_id"`
+	Params       []byte     `json:"params"`
+	Point        *int32     `json:"point"`
+	Fold         *int32     `json:"fold"`
+	Phase        *string    `json:"phase"`
+}
+
+type BacktestRunSymbol struct {
+	RunID    uuid.UUID `json:"run_id"`
+	Ord      int32     `json:"ord"`
+	SymbolID int64     `json:"symbol_id"`
+}
+
+type BacktestSweep struct {
+	ID           uuid.UUID `json:"id"`
+	UserID       uuid.UUID `json:"user_id"`
+	StrategyID   uuid.UUID `json:"strategy_id"`
+	Kind         string    `json:"kind"`
+	Spec         []byte    `json:"spec"`
+	Axes         []byte    `json:"axes"`
+	Folds        []byte    `json:"folds"`
+	Objective    string    `json:"objective"`
+	SymbolID     int64     `json:"symbol_id"`
+	Timeframe    string    `json:"timeframe"`
+	StartDate    time.Time `json:"start_date"`
+	EndDate      time.Time `json:"end_date"`
+	CapitalCents int64     `json:"capital_cents"`
+	MaxPositions int32     `json:"max_positions"`
+	Points       int32     `json:"points"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type BacktestSweepSymbol struct {
+	SweepID  uuid.UUID `json:"sweep_id"`
+	Ord      int32     `json:"ord"`
+	SymbolID int64     `json:"symbol_id"`
 }
 
 type BacktestTrade struct {
@@ -49,6 +86,9 @@ type BacktestTrade struct {
 	FeesCents      int64      `json:"fees_cents"`
 	ExitReason     *string    `json:"exit_reason"`
 	DividendsCents int64      `json:"dividends_cents"`
+	BorrowCents    int64      `json:"borrow_cents"`
+	SplitCashCents int64      `json:"split_cash_cents"`
+	SymbolID       int64      `json:"symbol_id"`
 }
 
 type BrapiUsage struct {
@@ -103,14 +143,16 @@ type RefreshToken struct {
 }
 
 type Strategy struct {
-	ID          uuid.UUID `json:"id"`
-	UserID      uuid.UUID `json:"user_id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Spec        []byte    `json:"spec"`
-	Version     int32     `json:"version"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          uuid.UUID  `json:"id"`
+	UserID      uuid.UUID  `json:"user_id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Spec        []byte     `json:"spec"`
+	Version     int32      `json:"version"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	ShareToken  *string    `json:"share_token"`
+	SharedAt    *time.Time `json:"shared_at"`
 }
 
 type Symbol struct {

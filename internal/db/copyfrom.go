@@ -45,6 +45,40 @@ func (q *Queries) CreateBacktestEquity(ctx context.Context, arg []CreateBacktest
 	return q.db.CopyFrom(ctx, []string{"backtest_equity"}, []string{"run_id", "ts", "equity_cents", "hold_cents", "index_cents"}, &iteratorForCreateBacktestEquity{rows: arg})
 }
 
+// iteratorForCreateBacktestRunSymbols implements pgx.CopyFromSource.
+type iteratorForCreateBacktestRunSymbols struct {
+	rows                 []CreateBacktestRunSymbolsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateBacktestRunSymbols) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateBacktestRunSymbols) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].RunID,
+		r.rows[0].Ord,
+		r.rows[0].SymbolID,
+	}, nil
+}
+
+func (r iteratorForCreateBacktestRunSymbols) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateBacktestRunSymbols(ctx context.Context, arg []CreateBacktestRunSymbolsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"backtest_run_symbols"}, []string{"run_id", "ord", "symbol_id"}, &iteratorForCreateBacktestRunSymbols{rows: arg})
+}
+
 // iteratorForCreateBacktestTrades implements pgx.CopyFromSource.
 type iteratorForCreateBacktestTrades struct {
 	rows                 []CreateBacktestTradesParams
@@ -67,6 +101,7 @@ func (r iteratorForCreateBacktestTrades) Values() ([]interface{}, error) {
 	return []interface{}{
 		r.rows[0].RunID,
 		r.rows[0].Seq,
+		r.rows[0].SymbolID,
 		r.rows[0].Side,
 		r.rows[0].Qty,
 		r.rows[0].EntryTs,
@@ -76,6 +111,8 @@ func (r iteratorForCreateBacktestTrades) Values() ([]interface{}, error) {
 		r.rows[0].PnlCents,
 		r.rows[0].FeesCents,
 		r.rows[0].DividendsCents,
+		r.rows[0].BorrowCents,
+		r.rows[0].SplitCashCents,
 		r.rows[0].ExitReason,
 	}, nil
 }
@@ -85,5 +122,86 @@ func (r iteratorForCreateBacktestTrades) Err() error {
 }
 
 func (q *Queries) CreateBacktestTrades(ctx context.Context, arg []CreateBacktestTradesParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"backtest_trades"}, []string{"run_id", "seq", "side", "qty", "entry_ts", "entry_price", "exit_ts", "exit_price", "pnl_cents", "fees_cents", "dividends_cents", "exit_reason"}, &iteratorForCreateBacktestTrades{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"backtest_trades"}, []string{"run_id", "seq", "symbol_id", "side", "qty", "entry_ts", "entry_price", "exit_ts", "exit_price", "pnl_cents", "fees_cents", "dividends_cents", "borrow_cents", "split_cash_cents", "exit_reason"}, &iteratorForCreateBacktestTrades{rows: arg})
+}
+
+// iteratorForCreateSweepRuns implements pgx.CopyFromSource.
+type iteratorForCreateSweepRuns struct {
+	rows                 []CreateSweepRunsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateSweepRuns) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateSweepRuns) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].ID,
+		r.rows[0].UserID,
+		r.rows[0].StrategyID,
+		r.rows[0].Spec,
+		r.rows[0].SymbolID,
+		r.rows[0].Timeframe,
+		r.rows[0].StartDate,
+		r.rows[0].EndDate,
+		r.rows[0].CapitalCents,
+		r.rows[0].MaxPositions,
+		r.rows[0].Status,
+		r.rows[0].SweepID,
+		r.rows[0].Params,
+		r.rows[0].Point,
+		r.rows[0].Fold,
+		r.rows[0].Phase,
+	}, nil
+}
+
+func (r iteratorForCreateSweepRuns) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateSweepRuns(ctx context.Context, arg []CreateSweepRunsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"backtest_runs"}, []string{"id", "user_id", "strategy_id", "spec", "symbol_id", "timeframe", "start_date", "end_date", "capital_cents", "max_positions", "status", "sweep_id", "params", "point", "fold", "phase"}, &iteratorForCreateSweepRuns{rows: arg})
+}
+
+// iteratorForCreateSweepSymbols implements pgx.CopyFromSource.
+type iteratorForCreateSweepSymbols struct {
+	rows                 []CreateSweepSymbolsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateSweepSymbols) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateSweepSymbols) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].SweepID,
+		r.rows[0].Ord,
+		r.rows[0].SymbolID,
+	}, nil
+}
+
+func (r iteratorForCreateSweepSymbols) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateSweepSymbols(ctx context.Context, arg []CreateSweepSymbolsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"backtest_sweep_symbols"}, []string{"sweep_id", "ord", "symbol_id"}, &iteratorForCreateSweepSymbols{rows: arg})
 }

@@ -340,8 +340,10 @@ committed, so a typo is exactly the thing a loud failure should catch. The trap 
 an explicit root list, never by shape alone.
 
 **Contract roots are seeded as symbols, `tracked = false`.** `WIN` as a row is the continuous
-back-adjusted series Phase 11 will build; the dated contracts (`WINZ25`) are separate symbols that
-only exist once a Pro token can enumerate them.
+back-adjusted series the rollover work will eventually build; the dated contracts (`WINZ25`) are
+separate symbols that only exist once a Pro token can enumerate them. Phase 11 left rollover
+undone for exactly this reason — the root is a row with nothing behind it until Phase 12 finds
+out whether brapi serves futures candles at all.
 
 **Every HTTP response counts against quota, including retries.** A 429 that gets retried three
 times is recorded as three requests. Pessimistic on purpose — the number exists to stop a backfill
@@ -2348,34 +2350,24 @@ minute bars a day and the same Sharpe formula works at every timeframe. Hard-cod
 per timeframe would have been four constants that drift the first time the session hours change.
 
 **The equity curve is downsampled in Postgres, on a stride that always keeps both ends.**
-`ListBacktestEquity` numbers the rows in a window and keeps `n % stride = 1 OR n = total`, so a
-19,000-point 5m run comes back as ~2,000 for the chart while the first and last points — the two
+`ListBacktestEquity` numbers the rows in a window and keeps `(n - 1) % stride = 0 OR n = total`, so
+a 19,000-point 5m run comes back as ~1,900 for the chart while the first and last points — the two
 that define the return — survive by construction. The response says `sampled` and reports the true
 `total`, so a thinned curve never passes as the whole thing.
+
+The predicate was first written `n % stride = 1`, which is the same set for every stride above one
+and **empty for a stride of exactly one** — `n % 1` is always 0, so a run shorter than the point
+budget returned only its final bar and every chart drew a single dot. Offsetting the numbering
+instead of the remainder is what makes the no-downsampling case fall out of the same expression as
+the rest, and the case that broke was the common one: 495 daily bars, well under the 2,000 asked
+for, needing no thinning at all.
 
 **Both benchmark curves live on the equity table, not in the metrics blob.** Three aligned numbers
 per bar in `backtest_equity` beats several thousand points inside a JSONB column: one query feeds
 the chart, the columns are nullable so a run without an index benchmark simply has nulls, and the
 `/equity` endpoint omits a curve entirely rather than shipping a ragged one.
 
-> **Status: written, not yet verified against the store.** The migration has not been applied and
-> the checks have not been run — both are yours. `sqlc` regenerated cleanly and the guess about the
-> cast parameter held: `$2::bigint` in the downsampler became `Column2`, the same shape
-> `SearchSymbols` already had.
->
-> Carried into later phases, deliberately:
-> - **The Selic series needs checking against BCB, and it stops at 2025-12-31.** The steps through
->   June 2025 are the ones worth trusting least at the tail; 2026 is absent entirely, so any run
->   into this year sets `risk_free_stale`. Source of record is SGS series 432.
-> - **Splits still do not adjust the share count.** They are detected and counted, not handled.
-> - **`skipped_entries` still does not say why.** Phase 9 flagged this as Phase 10's to split once
->   the report had somewhere to show it; the report now shows the count and the three possible
->   causes in one sentence, which is honest but is not the split.
-> - **Trade markers are drawn against the loaded page.** A fill outside the visible range has no
->   marker rather than snapping to the nearest bar, and switching symbols clears them, since
->   markers from one ticker on another ticker's candles would be worse than none.
-
-### Three fixes after the phase closed
+### What the first real strategies forced
 
 **A rule can name any line an indicator emits, so one declaration reaches all of them.** An input
 still declares its own `output`, but a rule may now write `cloud.kijun` for any other line of the
@@ -2387,9 +2379,9 @@ canonical spec drops a line name from a single-output indicator because `fast.em
 the same series. Without this, reaching five Ichimoku lines meant five inputs out of a budget of
 twelve, which is the definition of unusable.
 
-**Short selling is modelled, and the Plan grew a leg for each direction.** `Plan.Entry/Exit/Stop/
-Target` became `Plan.Long` and `Plan.Short`, each a `Leg` carrying its own entry, exit and
-brackets — because a stop that sits below the entry for a long sits above it for a short, and
+**Short selling is modelled, and the Plan grew a leg for each direction.** The four flat fields
+`Entry`, `Exit`, `Stop` and `Target` became `Plan.Long` and `Plan.Short`, each a `Leg` carrying its
+own — because a stop that sits below the entry for a long sits above it for a short, and
 sharing one `Bracket` would silently hand one side the other's risk. The engine reads direction off
 the position rather than assuming: a short sells to open and buys to cover, its equity is cash less
 what the buy-back costs, and it **pays** the dividend a long would have collected, since the lender
@@ -2402,24 +2394,281 @@ runs. The bracket budget also moved from per-spec to per-side — one stop each 
 worth, not two brackets on one — and `risk_pct` sizing now names the side whose exit is missing its
 stop rather than passing validation and skipping every short entry at runtime.
 
-**Borrow cost is the honest gap.** The engine shorts anything, in any size, for free. Real shorting
-costs a borrow fee and is sometimes simply unavailable, so a short strategy's numbers here are its
-best case. That is Phase 11's, listed there now.
+**A new strategy sizes in shares, not in a fraction of equity.** The builder's blank spec opens on
+`fixed_qty` at 100. `pct_equity` compounds, which makes a first run's numbers hard to argue with by
+hand — the whole property Phase 9 built the engine around — and 100 shares of a 100-lot stock is
+the one size that survives lot flooring untouched.
+
+**Borrow cost is the honest gap this opened.** The engine shorts anything, in any size, for free.
+Real shorting costs a borrow fee and is sometimes simply unavailable, so a short strategy's numbers
+here are its best case rather than its expected one. Listed in Phase 11.
+
+> **Status: done, migrated and checked end to end.** `00013_backtest_reports.sql` is applied,
+> `sqlc` regenerated cleanly, and the full check run — gofmt, vet, staticcheck, gosec, the Go suite
+> under `-race`, and `svelte-check` — passes on the generated tree. The guess about the cast
+> parameter held: `$2::bigint` in the downsampler became `Column2`, the same shape `SearchSymbols`
+> already had.
+>
+> Three things were caught by writing the checks rather than by reading the code, and all three
+> would have been invisible until a particular run happened to hit them:
+> - **`math.Inf(1)` for profit factor fails `json.Marshal`**, which would have errored the result
+>   write for exactly the runs that never lost a trade. The field is `*float64` and the JSON is
+>   `null`; a test marshals the metrics and asserts it.
+> - **`int32(offset)` wraps negative on a large query parameter**, and Postgres rejects `OFFSET -N`.
+>   It saturates at `MaxInt32` through the `int32Of` helper that already existed.
+> - **The rate curve's ascending-date check earned its place on the first load**, catching a step
+>   entered a year out of position before any Sharpe could compute against a curve that ran
+>   backwards.
+>
+> Carried into later phases, deliberately:
+> - **The Selic series runs 2020-08-06 to 2026-08-05 and declares `through: 2026-08-26`.** `through`
+>   is deliberately not the last decision's date: a rate holds until the next Copom meeting, so the
+>   field asserts how far the curve is *known good*, and a run past it sets `risk_free_stale` rather
+>   than quietly carrying a stale rate. It dates the file on purpose. Source of record is BCB SGS
+>   series 432.
+> - **Splits still do not adjust the share count.** They are detected and counted, not handled.
+> - **`skipped_entries` still does not say why.** Phase 9 flagged this as Phase 10's to split once
+>   the report had somewhere to show it; the report now shows the count and the three possible
+>   causes in one sentence, which is honest but is not the split.
+> - **Trade markers are drawn against the loaded page.** A fill outside the visible range has no
+>   marker rather than snapping to the nearest bar, and switching symbols clears them, since
+>   markers from one ticker on another ticker's candles would be worse than none.
 
 ---
 
-## Phase 11 — Beyond a single run *(stretch)*
+## Phase 11 — Beyond a single run
 
-- [ ] Parameter sweeps: ranges per input, grid execution across the worker pool, results heatmap
-- [ ] Walk-forward analysis: rolling in-sample optimize → out-of-sample test
-- [ ] Portfolio backtests: one strategy across a basket, shared capital
-- [ ] Futures: contract rollover and back-adjusted continuous series (WIN/WDO change contract
-      every couple of months; a naive concatenation puts a fake gap at every roll)
-- [ ] Strategy sharing / public read-only links
-- [ ] Borrow cost on short positions, and the hard-to-borrow list that says which shorts were
-      actually available (the engine shorts anything, for free, which flatters every short strategy)
-- [ ] Corporate actions that are not dividends: a split adjusts the share count, rather than being
+- [x] Parameter sweeps: ranges per input, grid execution across the worker pool, results heatmap
+- [x] Walk-forward analysis: rolling in-sample optimize → out-of-sample test
+- [x] Portfolio backtests: one strategy across a basket, shared capital
+- [x] Strategy sharing / public read-only links
+- [x] Borrow cost on short positions, and the hard-to-borrow list that says which shorts were
+      actually available
+- [x] Corporate actions that are not dividends: a split adjusts the share count, rather than being
       counted in `unpriced_actions` and skipped
+- [ ] **Futures: contract rollover and back-adjusted continuous series.** Deferred, and not for
+      effort: `data/contracts.json` names WIN, IND, WDO and DOL, but nothing ingests a futures
+      candle, so there is no series to back-adjust. This waits on data, not on code
+
+*(Four migrations. `00014_carry_and_actions.sql` adds `backtest_trades.borrow_cents` and
+`split_cash_cents`; `00015_backtest_baskets.sql` adds `backtest_run_symbols`,
+`backtest_runs.max_positions` and `backtest_trades.symbol_id`, backfilling both from the
+run's primary symbol; `00016_backtest_sweeps.sql` adds `backtest_sweeps`,
+`backtest_sweep_symbols` and the five sweep columns on `backtest_runs`;
+`00017_shared_strategies.sql` adds `strategies.share_token`.)*
+
+**Done when:** a sweep says which parameters were best, a walk-forward says whether that
+answer survived contact with data it was never tuned on, and a short's numbers include what
+it costs to borrow the shares.
+
+### Decisions this phase forced
+
+**A sweep child is an ordinary backtest run, and that is the whole design.** A grid point is a
+row in `backtest_runs` with a `sweep_id`, a `params` blob and its own canonical spec — so the
+worker pool claims it, the engine runs it, and `/trades`, `/equity` and the whole Phase 10
+report open on it unchanged. The alternative was a second execution path for sweeps, which
+would have meant a second place for lookahead bias, cost modelling and dividend handling to
+drift out of agreement with the first. Nothing in the engine knows a sweep exists.
+
+**Ad-hoc runs jump the queue ahead of sweep children, or a sweep makes the app unusable while
+it drains.** `ClaimBacktestRun` orders by `(sweep_id IS NOT NULL), created_at`, and the partial
+index was rebuilt on that expression. Two hundred queued points would otherwise sit in front of
+the one run you queued to check something, on a box with three workers. The per-user limit was
+split the same way: `CountActiveBacktestRuns` now counts only runs with no `sweep_id`, and
+sweeps are held to one at a time on their own.
+
+**An axis addresses what it varies with a JSON Pointer, because that is already this codebase's
+vocabulary for pointing at part of a spec.** `/inputs/fast/params/period` is the same string a
+parse fault would hand back in `pointer`, so an axis the builder rejects and a spec the parser
+rejects speak the same language. Only three shapes are reachable — an indicator parameter, the
+sizing value, a cost — and the allowlist is what keeps `/version` and `/entry/long` from being
+addressable at all.
+
+**Every point of the grid is built and re-parsed before anything is queued.** A range from 5 to
+20 by 5 on a period whose ceiling is 15 is one 400 with a pointer, not four runs of which two
+fail an hour later for a reason nobody is watching for. The cost is 200 parses at create time,
+which is nothing, and the canonical spec each point produces is what its run row stores — so a
+sweep child is self-describing in exactly the way an ordinary run already was.
+
+**Walk-forward is two stages coordinated through the queue, not one long job.** Every fold's
+in-sample grid is independent of every other fold's, so all `folds × points` of them are queued
+at once and the pool parallelises the expensive half. Only the out-of-sample run depends on a
+result, and it is created when the last in-sample run of its fold settles — `ReadyWalkForwardFolds`
+asks for folds with nothing queued or running, at least one done, and no test run yet. Running
+the whole thing inside one worker would have been simpler to read and would have blown the
+ten-minute run timeout on any fold count worth having.
+
+**Two workers can finish a fold's last two runs at once, so the database decides who wins.** The
+promotion path is racy by construction and a partial unique index on `(sweep_id, fold) WHERE
+phase = 'out_of_sample'` makes the loser a no-op rather than a duplicate test run. Catching the
+unique violation and returning nil is the whole handler; there is no lock, and there is nothing
+to leak if a worker dies between the check and the insert.
+
+**A run that never traded is not scored, which is not the same as scoring zero.** Zero is a
+number a losing strategy reaches. A parameter set that never opened a position has not earned
+it, and letting the two tie is precisely how a walk-forward promotes a spec that does nothing at
+all into the next window. `Metrics.Score` returns `(0, false)` for `trades == 0` and the ranking
+skips it. A fold where *no* point traded stays unresolved and the report says "nothing traded"
+rather than sitting on "waiting" forever.
+
+**Profit factor ranks at positive infinity and serialises as null, and those are different
+questions.** Phase 10 established that `math.Inf(1)` fails `json.Marshal`; a ranking is not JSON,
+so a run with no losing trade scores `+Inf` in memory and takes its rightful place at the top.
+The sweep's *response* then drops the score to null the same way the metric itself does. Getting
+this backwards in either direction is a bug: refusing to score it demotes the best run in the
+grid, and marshalling it errors the whole endpoint.
+
+**Cash is the only thing a basket shares, and that is what made the portfolio case a loop rather
+than a second engine.** Each symbol became a `book` carrying its own bars, its own indicator
+tape, its own corporate actions and its own position; the engine holds the cash, the equity
+curve and the trade log. A single-symbol run is a basket of one down the same path, which is why
+there is no second code path to keep honest — every Phase 9 and Phase 10 test still exercises
+the portfolio engine.
+
+**The timeline is the union of every symbol's bars, so a halted ticker costs nobody a bar.** A
+symbol simply has no bar at a stamp it did not trade, and its own index does not advance. That
+falls out correctly for a ticker listed late, halted mid-run, or delisted before the end: it
+closes out on the last bar *it* has, not on the last bar the basket has, and everyone else's
+signal-to-fill spacing is untouched.
+
+**The seat count is checked at the fill, not at the signal.** A basket capped at three positions
+can have five symbols fire on the same close, and by the time the fourth fills, another symbol
+has taken the last seat. Checking at the signal would hand the strategy knowledge of an
+allocation that had not happened yet. `crowded_out` counts what this cost, so a report can say
+that raising `max_positions` was worth considering rather than leaving the reader to guess why
+half the signals produced nothing.
+
+The cap is therefore a promise about what is *held* at once, not about how many trades a run
+takes. A position closed on bar *i* frees its seat on bar *i*, including when the close is the
+end-of-run exit — so a symbol that has been waiting can enter on the final bar's open and be
+closed out at that same bar's close. That reads as a pointless trade, and it is the only honest
+answer: the waiting symbol's intent was formed at the previous close, and declining it because
+this bar turned out to be the last one is exactly the lookahead the whole engine is built to
+avoid.
+
+**Order within a bar is the basket's own order, for the same reason long beat short in Phase
+10.** Several symbols firing on one close have to resolve to a definite set of positions, and a
+fixed order is the only resolution that survives being run twice. The basket is offered in the
+order it was submitted.
+
+**Borrow cost is a property of the market, not of the strategy, so it is not in the spec.** It
+lives in `data/borrow/b3_btb.json`, loaded and validated exactly like `selic.json`: a dated
+`through`, a `basis: 252`, a default annual rate, per-ticker overrides, and windows naming what
+was hard to borrow when. Putting `borrow_bps` in `Costs` would have made it something a strategy
+author chooses, which is the one thing it is not — you pay what BTB charges. The committed file
+carries a single documented default and no per-ticker data, because inventing plausible BTB
+rates for four tickers would be worse than admitting the curve is flat: the mechanism is real,
+the numbers are one placeholder, and `through` dates it.
+
+**Borrow accrues on the previous close for the same reason a dividend is credited there.** The
+fee is rent on shares that were already borrowed when the bar opened, so it is charged before
+the fill: a short entered on this bar's open pays nothing for it, and one covered later on this
+same bar still pays. Both cases fall out of the sequence rather than out of a date comparison.
+
+**The fee is carried as a float and only whole cents move.** A daily 2% rate on a small short is
+tens of thousandths of a cent a bar, and rounding each bar independently charges exactly zero,
+forever. `borrowOwed` accumulates and settles whole cents as they appear, with the residual
+rounded into the trade at exit. This is the difference between modelling borrow and appearing to.
+
+**Splits adjust the share count, and `entryCents` does not move — which is where the one real
+bug of this phase was.** The obvious thing is to rewrite the cost basis to `qty × entryPrice`
+after the adjustment. It is wrong whenever a grouping leaves a fraction behind: the fraction is
+sold for cash, and rewriting the basis to cover only the surviving shares double-counts that
+cash as profit. Working the arithmetic for the test case is what caught it — 105 shares grouped
+one for ten, bought at R$10.10 and finished at R$112.00, has to come out at R$111.50 of profit
+and came out at R$162.00. `entryCents` is what the position cost and a split refunds nothing, so
+it stays put; after a fractional grouping `qty × entryPrice` deliberately no longer reproduces
+it, and the gap is exactly the basis of the shares that were cashed out.
+
+**A split smaller than 3:2 cannot be told from a large dividend, and the dividend reading wins.**
+The classifier reads the adjustment ratio: below `maxImpliedYield` it is a dividend, above it the
+implied factor is matched against the ratios real corporate actions actually use. The two regions
+meet at 33%, which is why the table starts at 3:2 and no 5:4 term appears — a 5:4 split reads as
+a 20% yield, and PETR4 genuinely paid 18.37%. Preferring the dividend there is the right call for
+this market, and it is a limitation rather than a bug. A jump matching neither still lands in
+`unpriced_actions`, and there is now a test for exactly that case.
+
+**A grouping that leaves less than a whole share settles the position in cash.** This is what B3
+actually does with grouping leftovers, and the alternative — carrying a fractional position, or
+flooring it to zero and losing the money silently — is a fiction either way. It exits with a
+`split` reason, which is a fifth thing an exit can be and is counted as such.
+
+**Brackets move with the split.** A 5% stop quoted against a R$10.10 entry sits at R$9.595, and
+the first bar after a 2:1 split trades at half that. Not dividing the stop would take every
+bracketed position out at the open of the split bar, at a price that never happened.
+
+**A share token is stored in the clear, unlike a refresh token, and that is deliberate.** A
+refresh token authenticates a person; a share token grants read access to one spec. Hashing it
+would mean the editor could never show the link again — every "what was that link?" would have
+to mint a new one and silently break the old. The endpoint returns the spec and the compiled
+plan, and nothing about who wrote it: no user id, no email, no runs, no results.
+
+**A revoked link and a link that never existed answer identically.** `404` either way, with the
+same text. Distinguishing them would turn the public endpoint into an oracle for probing which
+tokens have ever been real.
+
+**The buy-and-hold benchmark is equal-weight across the basket.** Each symbol gets the same share
+of the starting capital at its own second bar and carries the same costs, dividends and splits
+as the engine — so the difference between the two curves is still the strategy and nothing else.
+A one-symbol basket is that code with the division by one, which is why `TestBuyAndHoldBenchmark
+MatchesAHeldPosition` still pins an always-long spec to exactly zero excess.
+
+**The Backtests list stopped showing sweep children.** `ListBacktestRuns` filters
+`sweep_id IS NULL`. Two hundred rows of one grid would bury the runs you queued by hand, and the
+sweep panel is where those points belong anyway.
+
+> **Status: done, migrated and checked end to end.** The four migrations are applied, `sqlc`
+> regenerated cleanly, and the full check run — gofmt, vet, staticcheck, gosec, the Go suite
+> under `-race`, and `svelte-check` — passes on the generated tree.
+>
+> Three things were caught by running the checks rather than by reading the code, and the first
+> two had been sitting in the repo since Phase 0 without anything reaching them:
+> - **The nullable `uuid` override in `sqlc.yaml` emitted a module path where a type name
+>   belongs**, producing `SweepID *github.com/google/uuid.UUID` and a generate that would not
+>   parse. sqlc reads `go_type` two ways: the string shorthand `"github.com/google/uuid.UUID"`
+>   splits at the last dot into an import and a type, while the object form — the one
+>   `pointer: true` forces you into — emits `type:` verbatim and derives no import. Every other
+>   object-form override is `time.Time` or `float64`, which are verbatim-valid Go, so the bug
+>   needed a nullable `uuid` column to fire and `backtest_runs.sweep_id` is the schema's first.
+>   The fix is `import: "github.com/google/uuid"` with `type: "UUID"`.
+> - **gosec flagged six `int -> int32` conversions**, all of them provably bounded by validation
+>   the analyser cannot see — `max_positions` at 20, the grid at 200 points, folds at 12. They go
+>   through the saturating `int32Of` Phase 10 already added for the same reason, rather than a
+>   `//nosec`, so the guarantee survives a cap being raised later.
+> - **`MaxPositions` caps what is held, not how many trades a run takes**, and the first version
+>   of that test asserted the wrong thing. The behaviour is right and is now pinned by a test of
+>   its own; the reasoning is under "the seat count is checked at the fill" above.
+>
+> The one bug in the engine itself was caught by doing the arithmetic for a test, not by reading
+> the code: **rewriting `entryCents` after a split double-counts the cash from a fractional
+> grouping as profit.** It is invisible on any split that divides evenly, which is most of them,
+> and it would have shown up as a trade whose profit disagreed with the equity curve — the one
+> cross-check the report does not draw.
+>
+> The guesses about generated names all held: `$1::uuid[]` takes `[]uuid.UUID` as a bare
+> argument the way `DeactivateSymbols` takes `[]string`; the nullable sweep columns produce
+> pointer fields; and `GetSweepRow` and `ListSweepsRow` are convertible, the way
+> `ListBacktestRunsRow` and `GetBacktestRunRow` already were.
+>
+> Carried forward, deliberately:
+> - **The borrow curve is one flat default rate.** The loader, the per-ticker overrides and the
+>   hard-to-borrow windows are all real and tested; the committed data is a placeholder that says
+>   so. Real BTB rates are the next honest improvement, and nothing in the code changes when they
+>   land.
+> - **Shorts are still sized against cash rather than against margin.** Selling short brings cash
+>   in; the engine caps the size by what the cash would buy, which is conservative and is not what
+>   a broker actually requires.
+> - **A heatmap collapses a third axis to the best point behind each cell.** Three axes are
+>   allowed, two are drawn, and the note under the map says so rather than letting the reader
+>   assume they are looking at the whole grid.
+> - **Walk-forward compounds its out-of-sample folds arithmetically, chaining `1 + r`.** Each fold
+>   starts from the full capital rather than from what the previous fold left, so the compounded
+>   figure is what the sequence of parameter choices would have returned, not what one account
+>   running continuously would have.
+> - **A fold whose whole grid finished without trading stays unresolved.** There is no winner to
+>   carry forward, so no out-of-sample run is queued and the table says "nothing traded" rather
+>   than sitting on "waiting" forever.
+> - **Futures are untouched**, for want of a single futures candle.
 
 ---
 
@@ -2516,7 +2765,11 @@ Collected here because the code carries no comments — this is where the reason
    ones that dropped out before the backfill, short of historical B3 portfolios. The bias is
    real, bounded, and decays as churn accumulates forward. State it when reporting any result
    that leans on the pre-launch window; don't pretend the sample is clean.
-3. **Corporate actions.** Unadjusted prices make every split a fake crash.
+3. **Corporate actions.** Unadjusted prices make every split a fake crash. Handled in Phase 11 by
+   reading the adjustment ratio: a jump small enough to be a dividend is credited as cash, one
+   matching a ratio a real split uses adjusts the share count, and anything else is counted in
+   `unpriced_actions` and left alone. The seam is at 33% — below it the dividend reading wins, so
+   a split smaller than 3:2 is not detectable and never will be from this data.
 4. **Intrabar ambiguity.** OHLC cannot order events inside a bar. Pick pessimistic, count it, report it.
 5. **Session-aligned buckets.** Resampling on wall-clock boundaries misaligns every intraday bar
    against the 10:00 open.
@@ -2524,7 +2777,9 @@ Collected here because the code carries no comments — this is where the reason
 7. **Float money.** Equity curves that drift a few centavos per trade over 5,000 trades are wrong
    by a visible amount.
 8. **Overfitting.** Phase 11's parameter sweeps make it trivially easy to find a strategy that fits
-   noise. Walk-forward is the mitigation, and it belongs in the same phase as the sweeps, not later.
+   noise. Walk-forward shipped in the same phase for exactly that reason, and the in-sample score
+   on a heatmap is the number to distrust: the one worth acting on is the out-of-sample column of
+   the fold table, which was produced by parameters chosen without ever seeing those days.
 9. **The volume is the asset.** `docker compose down -v` deletes the candle store. Rebuilding it
    costs a month of Pro. Never put `-v` in a Makefile target that isn't named something alarming.
 10. **The daily bar is not the sum of the 5m bars.** B3's official daily close comes from the
@@ -2543,7 +2798,11 @@ Collected here because the code carries no comments — this is where the reason
     one delivers 79-83; bars with no trades don't exist. Anything that assumes a fixed bar count
     per session — resampling, gap detection, warmup arithmetic — has to fold what is present
     rather than what should be.
-13. **Development ran on four large caps.** PETR4, VALE3, ITUB4 and MGLU3 are liquid, gap rarely,
+13. **A short's numbers are still a best case.** Borrow accrues from Phase 11's committed curve,
+    but that curve is one flat default rate until real BTB data lands, and the hard-to-borrow list
+    is empty. A short on a name that was genuinely expensive or simply unavailable will look
+    better here than it was.
+14. **Development ran on four large caps.** PETR4, VALE3, ITUB4 and MGLU3 are liquid, gap rarely,
     and never halt. The first backfill of illiquid tickers will surface zero-volume bars, missing
     sessions and stale prices that four blue chips never exercised. Expect Phase 12 to find bugs
     in code that looked finished.
@@ -2558,8 +2817,12 @@ Collected here because the code carries no comments — this is where the reason
   Revisit once the thing is deployed and actually used.
 - **Timeframes below 5m.** Not a resolution this project serves. Reopening it means a 5× row
   count and a re-backfill.
-- **Short selling, portfolio backtests, parameter sweeps, futures rollover.** All in Phase 11,
-  all optional, none blocking a deploy.
+- **Futures rollover and back-adjusted continuous series.** The only Phase 11 item left. It waits
+  on futures candles existing at all, not on the code — `data/contracts.json` already names the
+  four roots.
+- **Real BTB borrow rates.** Phase 11 built the curve, the per-ticker overrides and the
+  hard-to-borrow windows; `data/borrow/b3_btb.json` carries one placeholder default until there
+  is a source to load. Nothing in the code changes when there is.
 
 ## Open questions
 
@@ -2575,8 +2838,9 @@ Collected here because the code carries no comments — this is where the reason
   persists on Pro at real depth cannot be tested until the token is upgraded — check it first, by
   fetching one symbol at two window sizes and reconciling both against the stored `1d`.
 - **Futures coverage.** brapi lists futures as Pro-only; whether WIN/WDO come with usable
-  intraday history is unverified. Phase 11's rollover work depends on the answer, and it can't
-  be checked until the Pro month.
+  intraday history is unverified. This is the one Phase 11 item that shipped undone, and it
+  cannot even be started until the Pro month answers this: back-adjusting a continuous series
+  needs a series.
 - **Backfilling admissions made after the Pro month.** A ticker promoted into an index later can
   only be given 5m history while a Pro token is live. On Free it gets daily from admission
   onward and nothing intraday, ever. If the plan is to drop to Free, either accept a universe

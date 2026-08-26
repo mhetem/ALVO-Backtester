@@ -22,6 +22,7 @@ const (
 
 type tradeBody struct {
 	Seq            int32      `json:"seq"`
+	Symbol         string     `json:"symbol"`
 	Side           string     `json:"side"`
 	Qty            int64      `json:"qty"`
 	EntryTS        time.Time  `json:"entry_ts"`
@@ -31,14 +32,17 @@ type tradeBody struct {
 	PnLCents       int64      `json:"pnl_cents"`
 	FeesCents      int64      `json:"fees_cents"`
 	DividendsCents int64      `json:"dividends_cents"`
+	BorrowCents    int64      `json:"borrow_cents"`
+	SplitCashCents int64      `json:"split_cash_cents"`
 	ExitReason     string     `json:"exit_reason,omitempty"`
 }
 
 type tradesBody struct {
-	RunID  uuid.UUID   `json:"run_id"`
-	Symbol string      `json:"symbol"`
-	Count  int         `json:"count"`
-	Trades []tradeBody `json:"trades"`
+	RunID   uuid.UUID   `json:"run_id"`
+	Symbol  string      `json:"symbol"`
+	Symbols []string    `json:"symbols"`
+	Count   int         `json:"count"`
+	Trades  []tradeBody `json:"trades"`
 }
 
 type equityBody struct {
@@ -92,9 +96,11 @@ func (s *Server) handleListBacktests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	baskets := s.basketsOf(r, rows)
+
 	body := runsBody{Count: len(rows), Limit: limit, Offset: offset, Runs: make([]backtestBody, 0, len(rows))}
 	for _, row := range rows {
-		body.Runs = append(body.Runs, listedBacktest(row))
+		body.Runs = append(body.Runs, listedBacktest(row, baskets[row.ID]))
 	}
 
 	respondJSON(w, r, http.StatusOK, body)
@@ -113,10 +119,17 @@ func (s *Server) handleBacktestTrades(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := tradesBody{RunID: run.ID, Symbol: run.Ticker, Count: len(rows), Trades: make([]tradeBody, 0, len(rows))}
+	body := tradesBody{
+		RunID:   run.ID,
+		Symbol:  run.Ticker,
+		Symbols: s.runTickers(r, run.ID, run.Ticker),
+		Count:   len(rows),
+		Trades:  make([]tradeBody, 0, len(rows)),
+	}
 	for _, row := range rows {
 		trade := tradeBody{
 			Seq:            row.Seq,
+			Symbol:         row.Ticker,
 			Side:           row.Side,
 			Qty:            row.Qty,
 			EntryTS:        row.EntryTs,
@@ -125,6 +138,8 @@ func (s *Server) handleBacktestTrades(w http.ResponseWriter, r *http.Request) {
 			ExitPrice:      row.ExitPrice,
 			FeesCents:      row.FeesCents,
 			DividendsCents: row.DividendsCents,
+			BorrowCents:    row.BorrowCents,
+			SplitCashCents: row.SplitCashCents,
 		}
 		if row.PnlCents != nil {
 			trade.PnLCents = *row.PnlCents
@@ -212,6 +227,32 @@ func (s *Server) handleBacktestEquity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, r, http.StatusOK, body)
+}
+
+// One query for every run on the page, rather than one per run: a list of twenty portfolio
+// runs is otherwise twenty round trips for what is a single join.
+func (s *Server) basketsOf(r *http.Request, rows []database.ListBacktestRunsRow) map[uuid.UUID][]string {
+	baskets := map[uuid.UUID][]string{}
+	if len(rows) == 0 {
+		return baskets
+	}
+
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+
+	held, err := s.queries.ListBacktestRunTickers(r.Context(), ids)
+	if err != nil {
+		s.logError(r, "reading run baskets", err)
+		return baskets
+	}
+
+	for _, row := range held {
+		baskets[row.RunID] = append(baskets[row.RunID], row.Ticker)
+	}
+
+	return baskets
 }
 
 func (s *Server) ownedRun(w http.ResponseWriter, r *http.Request) (database.GetBacktestRunRow, bool) {

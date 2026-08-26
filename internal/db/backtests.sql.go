@@ -20,11 +20,11 @@ SET status = 'running',
 WHERE id = (
     SELECT id FROM backtest_runs
     WHERE status = 'queued'
-    ORDER BY created_at
+    ORDER BY (sweep_id IS NOT NULL), created_at
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, strategy_id, spec, symbol_id, timeframe, start_date, end_date, capital_cents, status, metrics, error, created_at, started_at, finished_at
+RETURNING id, user_id, strategy_id, spec, symbol_id, timeframe, start_date, end_date, capital_cents, status, metrics, error, created_at, started_at, finished_at, max_positions, sweep_id, params, point, fold, phase
 `
 
 func (q *Queries) ClaimBacktestRun(ctx context.Context) (BacktestRun, error) {
@@ -46,13 +46,19 @@ func (q *Queries) ClaimBacktestRun(ctx context.Context) (BacktestRun, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.MaxPositions,
+		&i.SweepID,
+		&i.Params,
+		&i.Point,
+		&i.Fold,
+		&i.Phase,
 	)
 	return i, err
 }
 
 const countActiveBacktestRuns = `-- name: CountActiveBacktestRuns :one
 SELECT COUNT(*) FROM backtest_runs
-WHERE user_id = $1 AND status IN ('queued', 'running')
+WHERE user_id = $1 AND sweep_id IS NULL AND status IN ('queued', 'running')
 `
 
 func (q *Queries) CountActiveBacktestRuns(ctx context.Context, userID uuid.UUID) (int64, error) {
@@ -84,23 +90,31 @@ type CreateBacktestEquityParams struct {
 const createBacktestRun = `-- name: CreateBacktestRun :one
 INSERT INTO backtest_runs (
     user_id, strategy_id, spec, symbol_id, timeframe,
-    start_date, end_date, capital_cents, status
+    start_date, end_date, capital_cents, max_positions, status,
+    sweep_id, params, point, fold, phase
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, 'queued'
+    $6, $7, $8, $9, 'queued',
+    $10, $11, $12, $13, $14
 )
-RETURNING id, user_id, strategy_id, spec, symbol_id, timeframe, start_date, end_date, capital_cents, status, metrics, error, created_at, started_at, finished_at
+RETURNING id, user_id, strategy_id, spec, symbol_id, timeframe, start_date, end_date, capital_cents, status, metrics, error, created_at, started_at, finished_at, max_positions, sweep_id, params, point, fold, phase
 `
 
 type CreateBacktestRunParams struct {
-	UserID       uuid.UUID `json:"user_id"`
-	StrategyID   uuid.UUID `json:"strategy_id"`
-	Spec         []byte    `json:"spec"`
-	SymbolID     int64     `json:"symbol_id"`
-	Timeframe    string    `json:"timeframe"`
-	StartDate    time.Time `json:"start_date"`
-	EndDate      time.Time `json:"end_date"`
-	CapitalCents int64     `json:"capital_cents"`
+	UserID       uuid.UUID  `json:"user_id"`
+	StrategyID   uuid.UUID  `json:"strategy_id"`
+	Spec         []byte     `json:"spec"`
+	SymbolID     int64      `json:"symbol_id"`
+	Timeframe    string     `json:"timeframe"`
+	StartDate    time.Time  `json:"start_date"`
+	EndDate      time.Time  `json:"end_date"`
+	CapitalCents int64      `json:"capital_cents"`
+	MaxPositions int32      `json:"max_positions"`
+	SweepID      *uuid.UUID `json:"sweep_id"`
+	Params       []byte     `json:"params"`
+	Point        *int32     `json:"point"`
+	Fold         *int32     `json:"fold"`
+	Phase        *string    `json:"phase"`
 }
 
 func (q *Queries) CreateBacktestRun(ctx context.Context, arg CreateBacktestRunParams) (BacktestRun, error) {
@@ -113,6 +127,12 @@ func (q *Queries) CreateBacktestRun(ctx context.Context, arg CreateBacktestRunPa
 		arg.StartDate,
 		arg.EndDate,
 		arg.CapitalCents,
+		arg.MaxPositions,
+		arg.SweepID,
+		arg.Params,
+		arg.Point,
+		arg.Fold,
+		arg.Phase,
 	)
 	var i BacktestRun
 	err := row.Scan(
@@ -131,13 +151,26 @@ func (q *Queries) CreateBacktestRun(ctx context.Context, arg CreateBacktestRunPa
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.MaxPositions,
+		&i.SweepID,
+		&i.Params,
+		&i.Point,
+		&i.Fold,
+		&i.Phase,
 	)
 	return i, err
+}
+
+type CreateBacktestRunSymbolsParams struct {
+	RunID    uuid.UUID `json:"run_id"`
+	Ord      int32     `json:"ord"`
+	SymbolID int64     `json:"symbol_id"`
 }
 
 type CreateBacktestTradesParams struct {
 	RunID          uuid.UUID  `json:"run_id"`
 	Seq            int32      `json:"seq"`
+	SymbolID       int64      `json:"symbol_id"`
 	Side           string     `json:"side"`
 	Qty            int64      `json:"qty"`
 	EntryTs        time.Time  `json:"entry_ts"`
@@ -147,6 +180,8 @@ type CreateBacktestTradesParams struct {
 	PnlCents       *int64     `json:"pnl_cents"`
 	FeesCents      int64      `json:"fees_cents"`
 	DividendsCents int64      `json:"dividends_cents"`
+	BorrowCents    int64      `json:"borrow_cents"`
+	SplitCashCents int64      `json:"split_cash_cents"`
 	ExitReason     *string    `json:"exit_reason"`
 }
 
@@ -188,7 +223,7 @@ func (q *Queries) FinishBacktestRun(ctx context.Context, arg FinishBacktestRunPa
 }
 
 const getBacktestRun = `-- name: GetBacktestRun :one
-SELECT r.id, r.user_id, r.strategy_id, r.spec, r.symbol_id, r.timeframe, r.start_date, r.end_date, r.capital_cents, r.status, r.metrics, r.error, r.created_at, r.started_at, r.finished_at, s.ticker
+SELECT r.id, r.user_id, r.strategy_id, r.spec, r.symbol_id, r.timeframe, r.start_date, r.end_date, r.capital_cents, r.status, r.metrics, r.error, r.created_at, r.started_at, r.finished_at, r.max_positions, r.sweep_id, r.params, r.point, r.fold, r.phase, s.ticker
 FROM backtest_runs r
 JOIN symbols s ON s.id = r.symbol_id
 WHERE r.id = $1 AND r.user_id = $2
@@ -215,6 +250,12 @@ type GetBacktestRunRow struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at"`
 	FinishedAt   *time.Time `json:"finished_at"`
+	MaxPositions int32      `json:"max_positions"`
+	SweepID      *uuid.UUID `json:"sweep_id"`
+	Params       []byte     `json:"params"`
+	Point        *int32     `json:"point"`
+	Fold         *int32     `json:"fold"`
+	Phase        *string    `json:"phase"`
 	Ticker       string     `json:"ticker"`
 }
 
@@ -237,6 +278,12 @@ func (q *Queries) GetBacktestRun(ctx context.Context, arg GetBacktestRunParams) 
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.MaxPositions,
+		&i.SweepID,
+		&i.Params,
+		&i.Point,
+		&i.Fold,
+		&i.Phase,
 		&i.Ticker,
 	)
 	return i, err
@@ -251,7 +298,7 @@ FROM (
     FROM backtest_equity
     WHERE run_id = $1
 ) points
-WHERE n % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 1 OR n = total
+WHERE (n - 1) % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 0 OR n = total
 ORDER BY ts
 `
 
@@ -292,11 +339,87 @@ func (q *Queries) ListBacktestEquity(ctx context.Context, arg ListBacktestEquity
 	return items, nil
 }
 
+const listBacktestRunSymbols = `-- name: ListBacktestRunSymbols :many
+SELECT rs.ord, s.id, s.ticker, s.lot_size, s.tick_size
+FROM backtest_run_symbols rs
+JOIN symbols s ON s.id = rs.symbol_id
+WHERE rs.run_id = $1
+ORDER BY rs.ord
+`
+
+type ListBacktestRunSymbolsRow struct {
+	Ord      int32   `json:"ord"`
+	ID       int64   `json:"id"`
+	Ticker   string  `json:"ticker"`
+	LotSize  int32   `json:"lot_size"`
+	TickSize float64 `json:"tick_size"`
+}
+
+func (q *Queries) ListBacktestRunSymbols(ctx context.Context, runID uuid.UUID) ([]ListBacktestRunSymbolsRow, error) {
+	rows, err := q.db.Query(ctx, listBacktestRunSymbols, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBacktestRunSymbolsRow{}
+	for rows.Next() {
+		var i ListBacktestRunSymbolsRow
+		if err := rows.Scan(
+			&i.Ord,
+			&i.ID,
+			&i.Ticker,
+			&i.LotSize,
+			&i.TickSize,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBacktestRunTickers = `-- name: ListBacktestRunTickers :many
+SELECT rs.run_id, rs.ord, s.ticker
+FROM backtest_run_symbols rs
+JOIN symbols s ON s.id = rs.symbol_id
+WHERE rs.run_id = ANY($1::uuid[])
+ORDER BY rs.run_id, rs.ord
+`
+
+type ListBacktestRunTickersRow struct {
+	RunID  uuid.UUID `json:"run_id"`
+	Ord    int32     `json:"ord"`
+	Ticker string    `json:"ticker"`
+}
+
+func (q *Queries) ListBacktestRunTickers(ctx context.Context, dollar_1 []uuid.UUID) ([]ListBacktestRunTickersRow, error) {
+	rows, err := q.db.Query(ctx, listBacktestRunTickers, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBacktestRunTickersRow{}
+	for rows.Next() {
+		var i ListBacktestRunTickersRow
+		if err := rows.Scan(&i.RunID, &i.Ord, &i.Ticker); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBacktestRuns = `-- name: ListBacktestRuns :many
-SELECT r.id, r.user_id, r.strategy_id, r.spec, r.symbol_id, r.timeframe, r.start_date, r.end_date, r.capital_cents, r.status, r.metrics, r.error, r.created_at, r.started_at, r.finished_at, s.ticker
+SELECT r.id, r.user_id, r.strategy_id, r.spec, r.symbol_id, r.timeframe, r.start_date, r.end_date, r.capital_cents, r.status, r.metrics, r.error, r.created_at, r.started_at, r.finished_at, r.max_positions, r.sweep_id, r.params, r.point, r.fold, r.phase, s.ticker
 FROM backtest_runs r
 JOIN symbols s ON s.id = r.symbol_id
-WHERE r.user_id = $1
+WHERE r.user_id = $1 AND r.sweep_id IS NULL
 ORDER BY r.created_at DESC
 LIMIT $2 OFFSET $3
 `
@@ -323,6 +446,12 @@ type ListBacktestRunsRow struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at"`
 	FinishedAt   *time.Time `json:"finished_at"`
+	MaxPositions int32      `json:"max_positions"`
+	SweepID      *uuid.UUID `json:"sweep_id"`
+	Params       []byte     `json:"params"`
+	Point        *int32     `json:"point"`
+	Fold         *int32     `json:"fold"`
+	Phase        *string    `json:"phase"`
 	Ticker       string     `json:"ticker"`
 }
 
@@ -351,6 +480,12 @@ func (q *Queries) ListBacktestRuns(ctx context.Context, arg ListBacktestRunsPara
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.MaxPositions,
+			&i.SweepID,
+			&i.Params,
+			&i.Point,
+			&i.Fold,
+			&i.Phase,
 			&i.Ticker,
 		); err != nil {
 			return nil, err
@@ -364,15 +499,18 @@ func (q *Queries) ListBacktestRuns(ctx context.Context, arg ListBacktestRunsPara
 }
 
 const listBacktestTrades = `-- name: ListBacktestTrades :many
-SELECT seq, side, qty, entry_ts, entry_price, exit_ts, exit_price,
-       pnl_cents, fees_cents, dividends_cents, exit_reason
-FROM backtest_trades
-WHERE run_id = $1
-ORDER BY seq
+SELECT t.seq, s.ticker, t.side, t.qty, t.entry_ts, t.entry_price, t.exit_ts, t.exit_price,
+       t.pnl_cents, t.fees_cents, t.dividends_cents, t.borrow_cents, t.split_cash_cents,
+       t.exit_reason
+FROM backtest_trades t
+JOIN symbols s ON s.id = t.symbol_id
+WHERE t.run_id = $1
+ORDER BY t.seq
 `
 
 type ListBacktestTradesRow struct {
 	Seq            int32      `json:"seq"`
+	Ticker         string     `json:"ticker"`
 	Side           string     `json:"side"`
 	Qty            int64      `json:"qty"`
 	EntryTs        time.Time  `json:"entry_ts"`
@@ -382,6 +520,8 @@ type ListBacktestTradesRow struct {
 	PnlCents       *int64     `json:"pnl_cents"`
 	FeesCents      int64      `json:"fees_cents"`
 	DividendsCents int64      `json:"dividends_cents"`
+	BorrowCents    int64      `json:"borrow_cents"`
+	SplitCashCents int64      `json:"split_cash_cents"`
 	ExitReason     *string    `json:"exit_reason"`
 }
 
@@ -396,6 +536,7 @@ func (q *Queries) ListBacktestTrades(ctx context.Context, runID uuid.UUID) ([]Li
 		var i ListBacktestTradesRow
 		if err := rows.Scan(
 			&i.Seq,
+			&i.Ticker,
 			&i.Side,
 			&i.Qty,
 			&i.EntryTs,
@@ -405,6 +546,8 @@ func (q *Queries) ListBacktestTrades(ctx context.Context, runID uuid.UUID) ([]Li
 			&i.PnlCents,
 			&i.FeesCents,
 			&i.DividendsCents,
+			&i.BorrowCents,
+			&i.SplitCashCents,
 			&i.ExitReason,
 		); err != nil {
 			return nil, err

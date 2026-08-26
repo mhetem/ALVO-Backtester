@@ -7,15 +7,19 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	database "github.com/mhetem/ALVO-Backtester/internal/db"
 	"github.com/mhetem/ALVO-Backtester/internal/market"
 	"github.com/mhetem/ALVO-Backtester/internal/strategy"
+	"github.com/mhetem/ALVO-Backtester/internal/sweep"
 )
 
 const (
@@ -24,6 +28,8 @@ const (
 	// IndexTicker is the benchmark every run is measured against. brapi answers it with 401
 	// until the token is Pro, so a missing series is reported, never fatal.
 	IndexTicker = "^BVSP"
+
+	uniqueViolation = "23505"
 
 	pollInterval  = 2 * time.Second
 	sweepInterval = 5 * time.Minute
@@ -39,6 +45,7 @@ type Runner struct {
 	candles *market.CandleService
 	cal     *market.Calendar
 	rates   *market.Rates
+	borrow  *market.Borrow
 	log     *slog.Logger
 	workers int
 	poll    time.Duration
@@ -46,7 +53,7 @@ type Runner struct {
 	wg      sync.WaitGroup
 }
 
-func NewRunner(pool *pgxpool.Pool, cal *market.Calendar, rates *market.Rates, log *slog.Logger) *Runner {
+func NewRunner(pool *pgxpool.Pool, cal *market.Calendar, rates *market.Rates, borrow *market.Borrow, log *slog.Logger) *Runner {
 	workers := Workers()
 
 	return &Runner{
@@ -55,6 +62,7 @@ func NewRunner(pool *pgxpool.Pool, cal *market.Calendar, rates *market.Rates, lo
 		candles: market.NewCandleService(pool, cal),
 		cal:     cal,
 		rates:   rates,
+		borrow:  borrow,
 		log:     log,
 		workers: workers,
 		poll:    pollInterval,
@@ -134,6 +142,8 @@ func (r *Runner) sweep(ctx context.Context) {
 		case requeued > 0:
 			r.log.Warn("requeued abandoned backtest runs", slog.Int64("runs", requeued))
 		}
+
+		r.promote(ctx)
 	}
 }
 
@@ -159,7 +169,9 @@ func (r *Runner) step(ctx context.Context) (bool, error) {
 			slog.Int("trades", result.Metrics.Trades),
 			slog.Duration("took", time.Since(started)),
 		)
-		return true, r.finish(ctx, row, result)
+		written := r.finish(ctx, row, result)
+		r.settled(ctx, row)
+		return true, written
 
 	case errors.Is(ctx.Err(), context.Canceled):
 		return true, r.requeue(ctx, row)
@@ -169,8 +181,20 @@ func (r *Runner) step(ctx context.Context) (bool, error) {
 			slog.String("run", row.ID.String()),
 			slog.Any("err", err),
 		)
-		return true, r.fail(ctx, row, err)
+		failed := r.fail(ctx, row, err)
+		r.settled(ctx, row)
+		return true, failed
 	}
+}
+
+// A fold's out-of-sample run cannot be queued until every in-sample run of that fold has
+// stopped, so the check runs when a sweep child settles rather than on a timer. The timer
+// in sweep() is the safety net for a worker that died between the two.
+func (r *Runner) settled(ctx context.Context, row database.BacktestRun) {
+	if row.SweepID == nil || ctx.Err() != nil {
+		return
+	}
+	r.promote(ctx)
 }
 
 func (r *Runner) execute(ctx context.Context, row database.BacktestRun) (Result, error) {
@@ -184,12 +208,12 @@ func (r *Runner) execute(ctx context.Context, row database.BacktestRun) (Result,
 		return Result{}, fmt.Errorf("compiling the run's spec: %w", err)
 	}
 
-	symbol, err := r.queries.GetSymbolByID(ctx, row.SymbolID)
+	timeframe, err := market.ParseTimeframe(row.Timeframe)
 	if err != nil {
-		return Result{}, fmt.Errorf("reading the run's symbol: %w", err)
+		return Result{}, err
 	}
 
-	timeframe, err := market.ParseTimeframe(row.Timeframe)
+	basket, err := r.basket(ctx, row)
 	if err != nil {
 		return Result{}, err
 	}
@@ -197,44 +221,84 @@ func (r *Runner) execute(ctx context.Context, row database.BacktestRun) (Result,
 	from := r.cal.Date(row.StartDate.Date())
 	to := r.cal.Date(row.EndDate.Date())
 
-	series, err := r.candles.Load(ctx, row.SymbolID, timeframe, from, to, MaxBars)
-	if err != nil {
-		return Result{}, err
-	}
-	if series.BaseBars >= MaxBars {
-		return Result{}, fmt.Errorf("%s %s holds more than %d bars between %s and %s: narrow the range or use a wider timeframe",
-			symbol.Ticker, timeframe, MaxBars, row.StartDate.Format(time.DateOnly), row.EndDate.Format(time.DateOnly))
-	}
-	if len(series.Candles) < 2 {
-		return Result{}, fmt.Errorf("%s has %d %s candles between %s and %s: a run needs at least two",
-			symbol.Ticker, len(series.Candles), timeframe, row.StartDate.Format(time.DateOnly), row.EndDate.Format(time.DateOnly))
-	}
+	instruments := make([]Instrument, 0, len(basket))
+	ids := make([]int64, 0, len(basket))
 
-	prime, err := r.candles.Prime(ctx, market.PrimeRequest{
-		SymbolID:  row.SymbolID,
-		Timeframe: timeframe,
-		Before:    series.Candles[0].TS,
-		Bars:      plan.PrimeBars,
-	})
-	if err != nil {
-		return Result{}, err
+	for _, symbol := range basket {
+		series, err := r.candles.Load(ctx, symbol.ID, timeframe, from, to, MaxBars)
+		if err != nil {
+			return Result{}, err
+		}
+		if series.BaseBars >= MaxBars {
+			return Result{}, fmt.Errorf("%s %s holds more than %d bars between %s and %s: narrow the range or use a wider timeframe",
+				symbol.Ticker, timeframe, MaxBars, row.StartDate.Format(time.DateOnly), row.EndDate.Format(time.DateOnly))
+		}
+		if len(series.Candles) < 2 {
+			return Result{}, fmt.Errorf("%s has %d %s candles between %s and %s: a run needs at least two",
+				symbol.Ticker, len(series.Candles), timeframe, row.StartDate.Format(time.DateOnly), row.EndDate.Format(time.DateOnly))
+		}
+
+		prime, err := r.candles.Prime(ctx, market.PrimeRequest{
+			SymbolID:  symbol.ID,
+			Timeframe: timeframe,
+			Before:    series.Candles[0].TS,
+			Bars:      plan.PrimeBars,
+		})
+		if err != nil {
+			return Result{}, err
+		}
+
+		instruments = append(instruments, Instrument{Symbol: symbol, Prime: prime, Candles: series.Candles})
+		ids = append(ids, symbol.ID)
 	}
 
 	return Run(Request{
-		Plan:        plan,
-		Symbol:      Symbol{Ticker: symbol.Ticker, LotSize: int64(symbol.LotSize), TickSize: symbol.TickSize},
-		Timeframe:   timeframe,
-		Capital:     row.CapitalCents,
-		Prime:       prime,
-		Candles:     series.Candles,
-		Index:       r.index(ctx, symbol.ID, timeframe, from, to),
-		IndexSymbol: IndexTicker,
-		Rates:       r.rates,
-		BarsPerYear: market.BarsPerYear(r.cal, timeframe),
+		Plan:         plan,
+		Instruments:  instruments,
+		MaxPositions: int(row.MaxPositions),
+		Timeframe:    timeframe,
+		Capital:      row.CapitalCents,
+		Index:        r.index(ctx, ids, timeframe, from, to),
+		IndexSymbol:  IndexTicker,
+		Rates:        r.rates,
+		Borrow:       r.borrow,
+		BarsPerYear:  market.BarsPerYear(r.cal, timeframe),
 	})
 }
 
-func (r *Runner) index(ctx context.Context, against int64, tf market.Timeframe, from, to time.Time) []market.Candle {
+func (r *Runner) basket(ctx context.Context, row database.BacktestRun) ([]Symbol, error) {
+	rows, err := r.queries.ListBacktestRunSymbols(ctx, row.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the run's basket: %w", err)
+	}
+
+	if len(rows) > 0 {
+		basket := make([]Symbol, 0, len(rows))
+		for _, held := range rows {
+			basket = append(basket, Symbol{
+				ID:       held.ID,
+				Ticker:   held.Ticker,
+				LotSize:  int64(held.LotSize),
+				TickSize: held.TickSize,
+			})
+		}
+		return basket, nil
+	}
+
+	primary, err := r.queries.GetSymbolByID(ctx, row.SymbolID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the run's symbol: %w", err)
+	}
+
+	return []Symbol{{
+		ID:       primary.ID,
+		Ticker:   primary.Ticker,
+		LotSize:  int64(primary.LotSize),
+		TickSize: primary.TickSize,
+	}}, nil
+}
+
+func (r *Runner) index(ctx context.Context, against []int64, tf market.Timeframe, from, to time.Time) []market.Candle {
 	symbol, err := r.queries.GetSymbolByTicker(ctx, IndexTicker)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -242,7 +306,7 @@ func (r *Runner) index(ctx context.Context, against int64, tf market.Timeframe, 
 		}
 		return nil
 	}
-	if symbol.ID == against {
+	if slices.Contains(against, symbol.ID) {
 		return nil
 	}
 
@@ -278,6 +342,7 @@ func (r *Runner) finish(ctx context.Context, row database.BacktestRun, result Re
 			trades = append(trades, database.CreateBacktestTradesParams{
 				RunID:          row.ID,
 				Seq:            trade.Seq,
+				SymbolID:       trade.SymbolID,
 				Side:           trade.Side,
 				Qty:            trade.Qty,
 				EntryTs:        trade.EntryTS,
@@ -287,6 +352,8 @@ func (r *Runner) finish(ctx context.Context, row database.BacktestRun, result Re
 				PnlCents:       &trade.PnLCents,
 				FeesCents:      trade.FeesCents,
 				DividendsCents: trade.DividendsCents,
+				BorrowCents:    trade.BorrowCents,
+				SplitCashCents: trade.SplitCashCents,
 				ExitReason:     &trade.ExitReason,
 			})
 		}
@@ -337,6 +404,147 @@ func (r *Runner) requeue(ctx context.Context, row database.BacktestRun) error {
 	r.log.Info("returning an interrupted backtest to the queue", slog.String("run", row.ID.String()))
 
 	return r.queries.RequeueBacktestRun(writeCtx, row.ID)
+}
+
+func (r *Runner) promote(ctx context.Context) {
+	writeCtx, cancel := r.detach(ctx, writeTimeout)
+	defer cancel()
+
+	ready, err := r.queries.ReadyWalkForwardFolds(writeCtx)
+	if err != nil {
+		r.log.Error("looking for folds ready to test out of sample", slog.Any("err", err))
+		return
+	}
+
+	for _, fold := range ready {
+		if fold.SweepID == nil || fold.Fold == nil {
+			continue
+		}
+		if err := r.advance(writeCtx, *fold.SweepID, *fold.Fold); err != nil {
+			r.log.Error("queueing a fold's out-of-sample run",
+				slog.String("sweep", fold.SweepID.String()),
+				slog.Int("fold", int(*fold.Fold)),
+				slog.Any("err", err),
+			)
+		}
+	}
+}
+
+// The winner of a fold is chosen on the objective the sweep was created with, over the
+// in-sample window only. The out-of-sample run it queues sees the next window for the
+// first time, which is the whole point of the exercise.
+func (r *Runner) advance(ctx context.Context, sweepID uuid.UUID, fold int32) error {
+	held, err := r.queries.GetSweepByID(ctx, sweepID)
+	if err != nil {
+		return fmt.Errorf("reading the sweep: %w", err)
+	}
+
+	var plan []sweep.Fold
+	if err := json.Unmarshal(held.Folds, &plan); err != nil {
+		return fmt.Errorf("reading the sweep's folds: %w", err)
+	}
+
+	at := slices.IndexFunc(plan, func(candidate sweep.Fold) bool { return candidate.Fold == int(fold) })
+	if at < 0 {
+		return fmt.Errorf("this sweep has no fold %d", fold)
+	}
+
+	start, end, err := plan[at].Window(sweep.PhaseOutOfSample, r.cal.Location())
+	if err != nil {
+		return err
+	}
+
+	rows, err := r.queries.ListSweepFoldRuns(ctx, database.ListSweepFoldRunsParams{SweepID: &sweepID, Fold: &fold})
+	if err != nil {
+		return fmt.Errorf("reading the fold's in-sample runs: %w", err)
+	}
+
+	winner, ok := bestOf(rows, held.Objective)
+	if !ok {
+		// Not a failure: every point of this fold's grid finished without opening a
+		// position, so there is no winner to carry into the next window. The fold stays
+		// unresolved and the report says so rather than inventing one.
+		r.log.Info("no in-sample run of this fold scored, so nothing is tested out of sample",
+			slog.String("sweep", sweepID.String()),
+			slog.Int("fold", int(fold)),
+			slog.String("objective", held.Objective),
+		)
+		return nil
+	}
+
+	phase := sweep.PhaseOutOfSample
+	created, err := r.queries.CreateBacktestRun(ctx, database.CreateBacktestRunParams{
+		UserID:       held.UserID,
+		StrategyID:   held.StrategyID,
+		Spec:         winner.Spec,
+		SymbolID:     held.SymbolID,
+		Timeframe:    held.Timeframe,
+		StartDate:    start,
+		EndDate:      end,
+		CapitalCents: held.CapitalCents,
+		MaxPositions: held.MaxPositions,
+		SweepID:      &sweepID,
+		Params:       winner.Params,
+		Point:        winner.Point,
+		Fold:         &fold,
+		Phase:        &phase,
+	})
+	if err != nil {
+		// Two workers can finish a fold's last two in-sample runs at once and both reach
+		// here. The partial unique index makes the loser a no-op rather than a duplicate.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+			return nil
+		}
+		return fmt.Errorf("queueing the out-of-sample run: %w", err)
+	}
+
+	symbols, err := r.queries.ListSweepSymbols(ctx, sweepID)
+	if err != nil {
+		return fmt.Errorf("reading the sweep's basket: %w", err)
+	}
+
+	basket := make([]database.CreateBacktestRunSymbolsParams, 0, len(symbols))
+	for _, symbol := range symbols {
+		basket = append(basket, database.CreateBacktestRunSymbolsParams{
+			RunID:    created.ID,
+			Ord:      symbol.Ord,
+			SymbolID: symbol.ID,
+		})
+	}
+	if len(basket) > 0 {
+		if _, err := r.queries.CreateBacktestRunSymbols(ctx, basket); err != nil {
+			return fmt.Errorf("writing the out-of-sample basket: %w", err)
+		}
+	}
+
+	r.Nudge()
+
+	return nil
+}
+
+func bestOf(rows []database.ListSweepFoldRunsRow, objective string) (database.ListSweepFoldRunsRow, bool) {
+	var best database.ListSweepFoldRunsRow
+	top, found := 0.0, false
+
+	for _, row := range rows {
+		var metrics Metrics
+		if err := json.Unmarshal(row.Metrics, &metrics); err != nil {
+			continue
+		}
+
+		score, ok := metrics.Score(objective)
+		if !ok {
+			continue
+		}
+		// Strictly greater, over rows already ordered by point, so a tie keeps the first
+		// point of the grid and the same sweep re-run picks the same winner.
+		if !found || score > top {
+			best, top, found = row, score, true
+		}
+	}
+
+	return best, found
 }
 
 func (r *Runner) detach(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {

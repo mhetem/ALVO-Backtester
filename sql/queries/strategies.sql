@@ -29,3 +29,22 @@ RETURNING *;
 -- name: DeleteStrategy :execrows
 DELETE FROM strategies
 WHERE id = $1 AND user_id = $2;
+
+-- name: ShareStrategy :one
+UPDATE strategies
+SET share_token = $3,
+    shared_at = NOW()
+WHERE id = $1 AND user_id = $2
+RETURNING *;
+
+-- name: UnshareStrategy :one
+UPDATE strategies
+SET share_token = NULL,
+    shared_at = NULL
+WHERE id = $1 AND user_id = $2
+RETURNING *;
+
+-- name: GetSharedStrategy :one
+SELECT id, name, description, version, spec, created_at, updated_at, shared_at
+FROM strategies
+WHERE share_token = $1;

@@ -120,6 +120,12 @@ export type PlanSummary = {
   short: LegSummary;
 };
 
+export type Share = {
+  token: string;
+  path: string;
+  shared_at?: string;
+};
+
 export type SavedStrategy = {
   id: string;
   name: string;
@@ -127,8 +133,20 @@ export type SavedStrategy = {
   version: number;
   spec: unknown;
   plan?: PlanSummary;
+  share?: Share;
   created_at: string;
   updated_at: string;
+};
+
+export type SharedStrategy = {
+  name: string;
+  description: string;
+  version: number;
+  spec: unknown;
+  plan?: PlanSummary;
+  created_at: string;
+  updated_at: string;
+  shared_at?: string;
 };
 
 export class SpecError extends Error {
@@ -158,24 +176,15 @@ export function blankLevel(): LevelDraft {
   return { type: 'pct', value: 0.05, period: 14, mult: 2 };
 }
 
+// A new strategy starts empty. Seeding it with a working EMA cross meant every saved
+// strategy began as somebody else's, and the parts a reader most needs to have chosen on
+// purpose — which indicators, which side, which rule — were the ones already filled in.
+// Costs are the exception: B3 emolumentos and a slippage allowance are properties of the
+// exchange rather than of the strategy, so they keep their defaults.
 export function blankSpec(): SpecDraft {
   return {
-    inputs: [
-      { name: 'fast', indicator: 'ema', params: { period: 9 }, source: 'close', output: '' },
-      { name: 'slow', indicator: 'ema', params: { period: 21 }, source: 'close', output: '' },
-    ],
-    long: {
-      entry: {
-        kind: 'compare',
-        op: 'crosses_above',
-        operands: [namedOperand('fast'), namedOperand('slow')],
-      },
-      exit: {
-        kind: 'compare',
-        op: 'crosses_below',
-        operands: [namedOperand('fast'), namedOperand('slow')],
-      },
-    },
+    inputs: [],
+    long: { entry: null, exit: null },
     short: { entry: null, exit: null },
     sizing: { type: 'fixed_qty', value: 100 },
     costs: { brokerage_cents: 0, fee_bps: 3.25, slippage_bps: 5 },
@@ -540,4 +549,38 @@ export async function deleteStrategy(id: string): Promise<void> {
 
 export function flagged(fault: string, at: string): boolean {
   return fault !== '' && (fault === at || fault.startsWith(`${at}/`));
+}
+
+export async function shareStrategy(id: string): Promise<Share> {
+  return decode<Share>(
+    await authorized(`/api/v1/strategies/${encodeURIComponent(id)}/share`, { method: 'POST' }),
+  );
+}
+
+export async function unshareStrategy(id: string): Promise<void> {
+  const res = await authorized(`/api/v1/strategies/${encodeURIComponent(id)}/share`, {
+    method: 'DELETE',
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new HttpError(res.status, await errorMessage(res));
+  }
+}
+
+// The one call in this module that carries no credentials: a share link is the whole
+// authorisation, and sending a token alongside it would make the link untestable.
+export async function fetchSharedStrategy(token: string): Promise<SharedStrategy> {
+  const res = await fetch(`/api/v1/shared/strategies/${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    throw new HttpError(res.status, await errorMessage(res));
+  }
+  return (await res.json()) as SharedStrategy;
+}
+
+export function shareURL(share: Share): string {
+  return new URL(share.path, window.location.origin).toString();
+}
+
+export function sharedToken(pathname: string): string | null {
+  const match = /^\/s\/([A-Za-z0-9_-]{8,64})\/?$/.exec(pathname);
+  return match ? match[1] : null;
 }
