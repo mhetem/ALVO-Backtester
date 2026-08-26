@@ -1,5 +1,5 @@
 import { HttpError, errorMessage } from './api';
-import { authorize, resume } from './session';
+import { authorized, decode } from './session';
 import type { StoredEntry } from './indicators';
 
 const workingKey = 'alvo.indicators';
@@ -99,24 +99,6 @@ export function saveLocalLayout(
       updated_at: now,
     },
   ];
-}
-
-async function authorized(path: string, init: RequestInit, retry = true): Promise<Response> {
-  const headers = authorize(new Headers(init.headers));
-  const res = await fetch(path, { ...init, headers, credentials: 'same-origin' });
-
-  if (res.status === 401 && retry && (await resume())) {
-    return authorized(path, init, false);
-  }
-
-  return res;
-}
-
-async function decode<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    throw new HttpError(res.status, await errorMessage(res));
-  }
-  return (await res.json()) as T;
 }
 
 export async function fetchLayouts(): Promise<SavedLayout[]> {

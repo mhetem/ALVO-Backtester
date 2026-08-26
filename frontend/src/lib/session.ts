@@ -71,3 +71,21 @@ export async function logout(): Promise<void> {
   accessToken = null;
   await fetch('/api/v1/auth/revoke', { method: 'POST', credentials: 'same-origin' });
 }
+
+export async function authorized(path: string, init: RequestInit, retry = true): Promise<Response> {
+  const headers = authorize(new Headers(init.headers));
+  const res = await fetch(path, { ...init, headers, credentials: 'same-origin' });
+
+  if (res.status === 401 && retry && (await resume())) {
+    return authorized(path, init, false);
+  }
+
+  return res;
+}
+
+export async function decode<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    throw new HttpError(res.status, await errorMessage(res));
+  }
+  return (await res.json()) as T;
+}

@@ -61,6 +61,17 @@ type RefreshToken struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+type Strategy struct {
+	ID          uuid.UUID `json:"id"`
+	UserID      uuid.UUID `json:"user_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Spec        []byte    `json:"spec"`
+	Version     int32     `json:"version"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type Symbol struct {
 	ID         int64      `json:"id"`
 	Ticker     string     `json:"ticker"`

@@ -5,6 +5,7 @@
   import IndicatorPanel from './lib/IndicatorPanel.svelte';
   import IndicatorPicker from './lib/IndicatorPicker.svelte';
   import SignIn from './lib/SignIn.svelte';
+  import StrategyEditor from './lib/StrategyEditor.svelte';
   import SymbolSearch from './lib/SymbolSearch.svelte';
   import {
     describe,
@@ -63,6 +64,7 @@
   let panelOpen = $state(false);
   let pickerOpen = $state(false);
   let signInOpen = $state(false);
+  let strategyOpen = $state(false);
 
   let layoutsFor = '';
   let restored = false;
@@ -345,6 +347,12 @@
       <button type="button" onclick={openPicker} aria-label="Add an indicator">+</button>
     </div>
 
+    <div class="group" role="group" aria-label="Strategies">
+      <button type="button" class:on={strategyOpen} onclick={() => (strategyOpen = true)}>
+        Strategies
+      </button>
+    </div>
+
     <span class="count">{count} bars loaded</span>
   </nav>
 
@@ -412,6 +420,10 @@
 
 {#if signInOpen}
   <SignIn onDone={signedIn} onClose={() => (signInOpen = false)} />
+{/if}
+
+{#if strategyOpen}
+  <StrategyEditor {catalog} {user} onClose={() => (strategyOpen = false)} />
 {/if}
 
 <style>

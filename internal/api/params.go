@@ -11,10 +11,17 @@ import (
 	"time"
 )
 
-const maxRequestBytes = 4096
+const (
+	maxRequestBytes = 4096
+	maxSpecBytes    = 64 << 10
+)
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	return decodeWithin(w, r, maxRequestBytes, dst)
+}
+
+func decodeWithin(w http.ResponseWriter, r *http.Request, limit int64, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		return errors.New("request body must be a JSON object")
 	}

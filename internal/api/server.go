@@ -52,6 +52,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/chart-layouts/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateChartLayout)))
 	mux.Handle("DELETE /api/v1/chart-layouts/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteChartLayout)))
 
+	mux.Handle("POST /api/v1/strategies/validate", s.requireAuth(http.HandlerFunc(s.handleValidateStrategy)))
+	mux.Handle("GET /api/v1/strategies", s.requireAuth(http.HandlerFunc(s.handleListStrategies)))
+	mux.Handle("POST /api/v1/strategies", s.requireAuth(http.HandlerFunc(s.handleCreateStrategy)))
+	mux.Handle("GET /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleGetStrategy)))
+	mux.Handle("PUT /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateStrategy)))
+	mux.Handle("DELETE /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteStrategy)))
+
 	mux.Handle("GET /api/v1/admin/brapi-usage", s.requireAuth(http.HandlerFunc(s.handleBrapiUsage)))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

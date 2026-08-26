@@ -1799,20 +1799,193 @@ Spec shape:
 }
 ```
 
-- [ ] Operands resolve to: a named input, a literal number, a price field (`close`, `high`, …),
-      or `{"ref": ["fast", 1]}` for *n* bars back
-- [ ] Comparators: `gt lt gte lte eq crosses_above crosses_below rising falling between`
-- [ ] Combinators: `all any not`
-- [ ] Validation on write: unknown indicator, out-of-range param, unresolvable operand, or a cycle
+- [x] Operands resolve to: a named input, a literal number, a price field (`close`, `high`, …),
+      or `{"ref": ["fast", 1]}` for *n* bars back *(plus `volume`, which is not an `indicator.Source`)*
+- [x] Comparators: `gt lt gte lte eq crosses_above crosses_below rising falling between`
+- [x] Combinators: `all any not`
+- [x] Validation on write: unknown indicator, out-of-range param, unresolvable operand, or a cycle
       is a 400 with a **JSON pointer to the offending node** — the builder highlights it inline
-- [ ] Compile step: spec → a flat evaluation plan with indicators instantiated once and operands
+- [x] Compile step: spec → a flat evaluation plan with indicators instantiated once and operands
       resolved to slot indices. Compile at run start, not per bar
-- [ ] Editing a saved strategy bumps `version` and leaves prior backtest runs pointing at the spec
+- [x] Editing a saved strategy bumps `version` and leaves prior backtest runs pointing at the spec
       they actually ran. A run whose strategy silently mutated underneath it is unreproducible
-- [ ] CRUD + `POST /api/v1/strategies/validate` (dry-run, no write)
-- [ ] Frontend: visual rule builder writing this JSON, plus a raw JSON editor
+      *(the bump is conditional — a rename alone does not count as an edit; see below)*
+- [x] CRUD + `POST /api/v1/strategies/validate` (dry-run, no write)
+- [x] Frontend: visual rule builder writing this JSON, plus a raw JSON editor
+
+*(The table landed as `00011_strategies.sql`, with `UNIQUE (user_id, name)` and a `strategies_user_idx`
+added on top of the DDL above — the same shape Phase 7 gave `chart_layouts`.)*
 
 **Done when:** an EMA-cross strategy round-trips UI → JSON → validate → save → compile without loss.
+
+### Decisions this phase forced
+
+**A stop-loss is not a condition, and treating it as one is a category error the JSON hides.** The
+plan's own example puts `stop_loss` and `take_profit` inside the exit's `any`, next to a crossing —
+and read as English that is exactly right: *exit when the fast line crosses down, or the stop is hit,
+or the target is hit.* But a crossing is evaluated at the close of bar *i*, while a stop is a resting
+order that fills **intrabar**, at a price no rule ever compares. They are different machines. Left in
+the tree, nothing stops you writing `{"not": {"stop_loss": …}}` or burying a stop inside an `all`,
+neither of which means anything a broker could execute.
+
+So the parser accepts brackets exactly where they read naturally — as the whole exit, or as direct
+members of the exit's top-level `any` — and rejects them anywhere else with a pointer. **Compile then
+hoists them out**: `Plan.Stop` and `Plan.Target` come out as `*Bracket`, and `Plan.Exit` is whatever
+condition tree is left, which may be nothing at all. Phase 9 gets the two things it actually needs
+already separated: a rule to evaluate at each close, and up to two resting orders to check against
+the bar's high and low. An `atr` bracket also gets a slot, so its ATR is one more indicator in the
+same plan rather than a special case in the engine — and it **deduplicates against a user-declared
+`atr` input with the same period**, so declaring ATR(14) as an input and stopping at 2×ATR(14) builds
+one indicator, not two.
+
+**Chained inputs are what make the cycle checkbox mean anything.** The plan asks for a cycle to be a
+400, but with inputs that only ever read price, a cycle is unreachable — the checkbox would be
+decoration. It becomes real once an input's `source` may name *another input*, which is also the
+feature people actually want: an SMA of RSI, an EMA of a smoothed oscillator. So `source` resolves to
+a price field **or** an input name, `findCycle` walks the graph and reports the loop by name
+(`a → b → a`) at the offending `/inputs/<name>/source`, and units are instantiated in topological
+order so an upstream slot is always filled before the thing reading it updates.
+
+Chaining is only allowed into indicators that declare `Sourced` — an ATR reads a whole candle, and
+"ATR of RSI" is not a thing. The downstream indicator is fed a **synthetic candle whose O/H/L/C are
+all the upstream value**, so whichever source field it picks yields that value; and it is fed
+*nothing at all* on bars where the upstream has not produced a value yet, which is what makes an
+SMA(3) of RSI(14) start counting its three bars from RSI's first output rather than from bar zero.
+Warmup adds down the chain for the same reason.
+
+**Evaluation is three-valued, and that is the lookahead guard.** A rule whose operands are not
+available yet — an indicator still warming up, a `ref` reaching further back than the tape holds —
+returns *unknown*, not false. It has to: with two values, `{"not": {…}}` over a warming indicator
+evaluates to **true**, and a strategy would fire an entry on bar zero for no reason. So `Rule.Eval`
+returns `(value, known)` and combinators do proper Kleene logic — `all` is false the moment one child
+is known-false, `any` is true the moment one child is known-true, and anything still undecided
+propagates as unknown. Only `known && value` signals.
+
+The other half of the guard is structural: `Tape` is a ring of the last `Depth + 1` bars and its only
+readers are `Slot(slot, back)` and `Field(field, back)`, both of which take a **non-negative** offset
+and refuse anything beyond what has actually been pushed. There is no method on the frame that could
+return a future bar, which is the property Phase 9's bar loop needs to inherit.
+
+**Canonicalisation pins every parameter, so a saved strategy cannot drift under a library change.**
+Validation does not just accept or reject — it returns a canonical spec, and that is what gets
+stored. `{"indicator": "rsi"}` comes back as `{"indicator": "rsi", "params": {"period": 14},
+"source": "close"}`; `{"rising": ["fast"]}` comes back as `{"rising": ["fast", 1]}`; a
+`{"ref": ["fast", 0]}` collapses to `"fast"`. The reproducibility argument is the same one behind
+copying the spec into `backtest_runs`: if a future phase changes RSI's default period, every strategy
+that had merely *implied* 14 would silently become a different strategy. Written down, they cannot.
+`output` is the one thing left implicit for single-output indicators, because `"output": "ema"` on
+every EMA is noise in a file people hand-edit.
+
+**Costs default to what B3 charges, not to zero.** An omitted `costs` block becomes
+`fee_bps: 3.25`, `slippage_bps: 5`, `brokerage_cents: 0`, and the defaults fill in per field, so
+`{"fee_bps": 0}` means zero fees and still carries slippage. Defaulting to zero would have been the
+neutral-looking choice and the wrong one: the failure mode of a backtester is a result that looks
+better than reality, and free trading is the most flattering assumption available. Since the
+canonical spec is stored, whatever was charged is always readable off the run.
+
+**`version` in the spec and `version` on the row are different numbers wearing the same name.** The
+JSON `"version": 1` is the *format* version — it gates how the parser reads the document, and a `2`
+is rejected today. The `version` column is an *edit counter* on one user's strategy. Nothing links
+them, and nothing should. The column is also bumped **conditionally**, in SQL:
+`version + (spec IS DISTINCT FROM $5)::int`. Renaming a strategy or fixing its description is not a
+change of logic, and a version number that ticks on a typo tells you nothing about which runs are
+comparable. `jsonb`'s `IS DISTINCT FROM` compares semantically, which is only safe *because* the
+stored spec is canonical.
+
+**Input names are identifiers, not free text.** Lower-case, starting with a letter, digits and
+underscores after, at most 24 characters, and never a price field name. Two reasons: an input called
+`close` would shadow a price field in every operand position, and a name containing `/` or `~` would
+need RFC 6901 escaping in the very pointers the builder relies on to highlight the right box.
+Escaping is implemented anyway, but no valid spec can exercise it.
+
+**Empty combinators are rejected rather than given their mathematical identity.** `{"all": []}` is
+vacuously true and `{"any": []}` is vacuously false, which is correct logic and a terrible entry
+rule — an empty `all` would open a position on every single bar. Both are 400s that say which one it
+would have been.
+
+**`eq` on floats compares with a tolerance.** Exact float equality between an indicator value and a
+literal essentially never fires, so `eq` would be a comparator that silently does nothing. It uses a
+relative epsilon of 1e-9. It is still the wrong comparator for almost every strategy; it is in the
+list because the plan asked for it.
+
+**`exit` is optional, because buy-and-hold has to be expressible.** Phase 9's done-when is that a
+buy-and-hold strategy returns the underlying's return minus one round trip of costs — and buy-and-hold
+is precisely a strategy with an entry and no exit, closed at the end of the run. A spec with no `exit`
+key compiles to a plan with a nil `Exit` rule and no brackets. `entry` and `sizing` stay required.
+
+**Strategies need an account; the builder does not.** Unlike Phase 7's layouts, there is no
+`localStorage` fallback — a strategy exists to be backtested, and backtests are server-side rows
+against a `user_id`. But the builder, the rule tree and the JSON tab all work signed out, with
+Validate and Save disabled; you can compose a spec and read exactly what would be sent. Merging an
+anonymous strategy into an account on sign-in is the same "reconcile two sets of names" problem
+Phase 7 declined, and it buys less here.
+
+**`POST /strategies/validate` sits behind `RequireAuth` even though it touches no user data.** It
+parses and compiles arbitrary JSON, instantiates indicators and walks a tree — it is the only
+unauthenticated-by-nature endpoint in the app that costs real CPU per call. Phase 4's rule was that
+market data is public and user data is not; this is neither, so the cheaper answer wins until Phase
+13 has rate limiting.
+
+> **Status: done and verified in the browser.** `make sqlc`, `make migrate` and `make check` all ran
+> clean **on the first pass** — gofmt, vet, staticcheck, gosec, the Go suite under `-race` and
+> `svelte-check` — which is the first phase since 0 where nothing needed a second attempt. The
+> done-when was exercised for real: an EMA(9)/EMA(21) cross goes UI → JSON → validate → save →
+> compile, and comes back canonicalised with `"period"`, `"source"` and `"fee_bps"` spelled out
+> even though none of the three was typed.
+>
+> The clean first pass is worth attributing rather than celebrating: this phase touched no
+> indicator maths, no chart rendering and no auth surface — the three places every earlier phase
+> drew blood. It added a parser, a compiler and a form. Phase 9 goes back to arithmetic that has a
+> right answer, and should be expected to behave like Phases 5 and 7 did.
+>
+> **The conditional version bump survived code generation.** `$5` appears twice in `UpdateStrategy` —
+> once as `spec = $5` and once inside `version + (spec IS DISTINCT FROM $5)::int` — and the worry was
+> that sqlc would split it into two parameters or name it `dollar_5`. It did neither: one
+> `Spec []byte` field, five arguments. Worth remembering the next time a query wants to read a
+> column's old value in the same statement that overwrites it.
+>
+> Offline tests hit no database. `internal/strategy/parse_test.go` asserts the **exact JSON pointer**
+> for forty-odd rejections — unknown indicator, out-of-range and fractional and undeclared
+> parameters, an unknown source, a source on an indicator that reads whole candles, volume as a
+> source, an unknown output, an input reading from itself, two inputs in a loop, a price field used
+> as an input name, a name that is not an identifier, an unknown field, an unresolvable operand, an
+> unknown comparator, wrong operand counts, empty `all` and `any`, a rule with two operators, a
+> bracket on the entry side and under an `all` and under a `not`, two stops, a `pct` level carrying
+> a `period`, an out-of-range level, a ref beyond the tape and a ref onto a number, bad sizing types
+> and values, `risk_pct` with no stop, costs beyond any broker, a future spec version, a backwards
+> `between`, and a non-literal bar count — plus that the plan's own example spec survives a second
+> canonicalisation byte-for-byte. `compile_test.go` covers instance and slot dedup, multi-output
+> slots, the bracket hoist, chained warmup, and look-back depth per comparator. `eval_test.go` walks
+> synthetic candles and asserts the exact bar each rule fires on, including that nothing fires while
+> an indicator is warming and that `not` does not leak a signal out of unknown.
+>
+> Carried into later phases, deliberately:
+> - **Validation reports one fault, not all of them.** The plan asked for *a* pointer and the builder
+>   highlights one box at a time, but a JSON-tab author fixing six things pays six round trips. The
+>   response shape (`{error, pointer}`) has room for a `faults` array whenever that stops being
+>   acceptable.
+> - **Short selling is not modelled.** `entry`/`exit` accept only `long`, and `"short"` is a 400 that
+>   says so. Phase 9's second pass adds the side; a Phase 8 spec stays valid when it does, because an
+>   added optional key is not a format change.
+> - **Nothing evaluates the brackets yet.** `Plan.Stop` and `Plan.Target` carry the level and, for
+>   `atr`, the slot to read the range from. Turning that into a fill — and deciding the stop wins
+>   when a bar's high and low touch both — is Phase 9's intrabar-ambiguity bullet.
+> - **A declared input that no rule mentions is still computed.** It costs an indicator per bar for
+>   nothing. Dropping unreferenced slots at compile time is a filter over `Plan.Index`, deferred
+>   because Phase 10 may well want to chart inputs the rules never compare.
+> - **`fixed_cash` sizing is in cents and `pct_equity` is a fraction**, both under one `value` field,
+>   because the plan's shape has one. The validation messages name the unit; the builder does not
+>   convert.
+> - **The builder cannot reorder or drag rules.** Conditions sit in the order they were added, and
+>   moving one means removing and re-adding it — the same limitation Phase 7's indicator list has.
+> - **A spec the builder cannot represent falls back to the JSON tab.** `specFromJSON` throws rather
+>   than guessing, and the editor switches tabs with the reason. Nothing today produces such a spec,
+>   but a hand-edited file with an unknown operator would.
+> - **The plan is stateful and single-run.** It holds live indicator instances, so a `*Plan` belongs
+>   to one goroutine; `NewTape` resets them. Phase 9's worker pool must compile per run, which is
+>   what "compile at run start" asked for anyway.
+> - **`Slot.Name` is recorded but nothing reads it.** It is there so Phase 10 can label a series by
+>   the input that asked for it rather than by an indicator key.
 
 ---
 
