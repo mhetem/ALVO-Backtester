@@ -158,3 +158,26 @@ func TestCommittedDataPlansTheFourFreeTickers(t *testing.T) {
 		}
 	}
 }
+
+func TestCommittedRatesAreValid(t *testing.T) {
+	rates, err := LoadRates(repoFS(), RatesFile)
+	if err != nil {
+		t.Fatalf("LoadRates: %v", err)
+	}
+
+	if rates.Basis() != TradingDaysPerYear {
+		t.Errorf("basis is %g, want the %d-business-day Brazilian convention", rates.Basis(), TradingDaysPerYear)
+	}
+
+	// The candle store starts in 2021, so a Sharpe over the earliest run must not be
+	// reaching past the front of the curve for its risk-free rate.
+	if start := rates.Start(); start.After(time.Date(2021, time.January, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("the rate curve starts at %s, want it to reach back to 2021", start.Format(time.DateOnly))
+	}
+
+	// Selic sat at 13.75% from August 2022 until August 2023 — the longest hold in the
+	// series, and the easiest row to check against BCB by hand.
+	if got := rates.AnnualPct(time.Date(2023, time.March, 1, 0, 0, 0, 0, time.UTC)); got != 13.75 {
+		t.Errorf("Selic on 2023-03-01 = %g%%, want 13.75%%", got)
+	}
+}

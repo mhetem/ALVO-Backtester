@@ -62,12 +62,42 @@ WHERE status = 'running' AND started_at < $1::timestamptz;
 -- name: CreateBacktestTrades :copyfrom
 INSERT INTO backtest_trades (
     run_id, seq, side, qty, entry_ts, entry_price,
-    exit_ts, exit_price, pnl_cents, fees_cents, exit_reason
+    exit_ts, exit_price, pnl_cents, fees_cents, dividends_cents, exit_reason
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11
+    $7, $8, $9, $10, $11, $12
 );
 
 -- name: CreateBacktestEquity :copyfrom
-INSERT INTO backtest_equity (run_id, ts, equity_cents)
-VALUES ($1, $2, $3);
+INSERT INTO backtest_equity (run_id, ts, equity_cents, hold_cents, index_cents)
+VALUES ($1, $2, $3, $4, $5);
+
+-- name: ListBacktestRuns :many
+SELECT r.*, s.ticker
+FROM backtest_runs r
+JOIN symbols s ON s.id = r.symbol_id
+WHERE r.user_id = $1
+ORDER BY r.created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: ListBacktestTrades :many
+SELECT seq, side, qty, entry_ts, entry_price, exit_ts, exit_price,
+       pnl_cents, fees_cents, dividends_cents, exit_reason
+FROM backtest_trades
+WHERE run_id = $1
+ORDER BY seq;
+
+-- name: CountBacktestEquity :one
+SELECT COUNT(*) FROM backtest_equity WHERE run_id = $1;
+
+-- name: ListBacktestEquity :many
+SELECT ts, equity_cents, hold_cents, index_cents
+FROM (
+    SELECT ts, equity_cents, hold_cents, index_cents,
+           ROW_NUMBER() OVER (ORDER BY ts) AS n,
+           COUNT(*) OVER () AS total
+    FROM backtest_equity
+    WHERE run_id = $1
+) points
+WHERE n % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 1 OR n = total
+ORDER BY ts;

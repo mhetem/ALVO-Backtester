@@ -61,8 +61,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateStrategy)))
 	mux.Handle("DELETE /api/v1/strategies/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteStrategy)))
 
+	mux.Handle("GET /api/v1/backtests", s.requireAuth(http.HandlerFunc(s.handleListBacktests)))
 	mux.Handle("POST /api/v1/backtests", s.requireAuth(http.HandlerFunc(s.handleCreateBacktest)))
 	mux.Handle("GET /api/v1/backtests/{id}", s.requireAuth(http.HandlerFunc(s.handleGetBacktest)))
+	mux.Handle("GET /api/v1/backtests/{id}/trades", s.requireAuth(http.HandlerFunc(s.handleBacktestTrades)))
+	mux.Handle("GET /api/v1/backtests/{id}/equity", s.requireAuth(http.HandlerFunc(s.handleBacktestEquity)))
 
 	mux.Handle("GET /api/v1/admin/brapi-usage", s.requireAuth(http.HandlerFunc(s.handleBrapiUsage)))
 

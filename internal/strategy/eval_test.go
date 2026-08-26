@@ -32,7 +32,7 @@ func entries(plan *Plan, candles []indicator.Candle) []bool {
 
 	for _, candle := range candles {
 		tape.Push(candle)
-		fired = append(fired, tape.Entry())
+		fired = append(fired, tape.Entry(&plan.Long))
 	}
 
 	return fired
@@ -161,7 +161,7 @@ func TestAChainedInputReadsTheOneAboveIt(t *testing.T) {
 
 	for _, candle := range candles {
 		tape.Push(candle)
-		fired = append(fired, tape.Entry())
+		fired = append(fired, tape.Entry(&plan.Long))
 
 		value, known := tape.Value("smooth")
 		if !known {

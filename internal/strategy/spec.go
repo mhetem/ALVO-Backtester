@@ -78,6 +78,9 @@ const (
 	KeyStopLoss   = "stop_loss"
 	KeyTakeProfit = "take_profit"
 	KeyLong       = "long"
+	KeyShort      = "short"
+
+	LineSep = "."
 )
 
 var Combinators = []string{KeyAll, KeyAny, KeyNot}
@@ -120,7 +123,27 @@ type Spec struct {
 }
 
 type Side struct {
-	Long Node `json:"long"`
+	Long  Node
+	Short Node
+}
+
+func (s Side) node(key string) Node {
+	if key == KeyShort {
+		return s.Short
+	}
+	return s.Long
+}
+
+func (s Side) MarshalJSON() ([]byte, error) {
+	body := map[string]Node{}
+	if s.Long != nil {
+		body[KeyLong] = s.Long
+	}
+	if s.Short != nil {
+		body[KeyShort] = s.Short
+	}
+
+	return json.Marshal(body)
 }
 
 type Input struct {
@@ -177,18 +200,28 @@ const (
 )
 
 type Operand struct {
-	Kind  OperandKind
-	Input string
-	Field Field
-	Value float64
-	Back  int
+	Kind   OperandKind
+	Input  string
+	Output string
+	Field  Field
+	Value  float64
+	Back   int
+}
+
+// Ref is how an operand names itself: an input on its own reads that input's declared
+// output, and "input.line" reads any other line the same indicator emits.
+func (o Operand) Ref() string {
+	if o.Output == "" {
+		return o.Input
+	}
+	return o.Input + LineSep + o.Output
 }
 
 func (o Operand) MarshalJSON() ([]byte, error) {
 	var head any
 	switch o.Kind {
 	case OperandInput:
-		head = o.Input
+		head = o.Ref()
 	case OperandField:
 		head = string(o.Field)
 	default:

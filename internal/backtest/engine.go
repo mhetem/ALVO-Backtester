@@ -1,6 +1,7 @@
 package backtest
 
 import (
+	"math"
 	"time"
 
 	"github.com/mhetem/ALVO-Backtester/internal/market"
@@ -44,17 +45,20 @@ func (b bracket) level(entry float64, above bool) float64 {
 
 type intent struct {
 	kind   intentKind
+	short  bool
 	stop   bracket
 	target bracket
 }
 
 type position struct {
 	open       bool
+	short      bool
 	qty        int64
 	entryTS    time.Time
 	entryPrice float64
 	entryCents int64
 	feesCents  int64
+	divCents   int64
 	stop       float64
 	target     float64
 }
@@ -64,11 +68,14 @@ type engine struct {
 	plan    *strategy.Plan
 	costing Costing
 	tape    *strategy.Tape
+	dist    distributions
 	cash    int64
 	pos     position
 	pending intent
 	trades  []Trade
 	equity  []EquityPoint
+	hold    []int64
+	index   []int64
 	metrics Metrics
 	seq     int32
 }
@@ -79,6 +86,7 @@ func newEngine(req Request) *engine {
 		plan:    req.Plan,
 		costing: Costing{Costs: req.Plan.Spec.Costs, TickSize: req.Symbol.TickSize},
 		tape:    req.Plan.NewTape(),
+		dist:    distributionsOf(req.Candles),
 		cash:    req.Capital,
 		trades:  []Trade{},
 		equity:  make([]EquityPoint, 0, len(req.Candles)),
@@ -94,6 +102,7 @@ func (e *engine) run() Result {
 	last := len(e.req.Candles) - 1
 
 	for i, candle := range e.req.Candles {
+		e.credit(i)
 		e.fill(candle)
 		e.brackets(candle)
 		e.tape.Push(candleFor(candle))
@@ -109,36 +118,66 @@ func (e *engine) run() Result {
 
 	e.summarize()
 
-	return Result{Trades: e.trades, Equity: e.equity, Metrics: e.metrics}
+	return Result{Trades: e.trades, Equity: e.equity, Hold: e.hold, Index: e.index, Metrics: e.metrics}
+}
+
+func (e *engine) credit(i int) {
+	if !e.pos.open {
+		return
+	}
+
+	perShare := e.dist.at(i)
+	if perShare <= 0 {
+		return
+	}
+
+	// The holder of record collects the dividend; whoever borrowed the shares to sell them
+	// short owes it. Same number, opposite sign.
+	paid := int64(math.Round(float64(e.pos.qty) * perShare * 100))
+	if e.pos.short {
+		paid = -paid
+	}
+
+	e.cash += paid
+	e.pos.divCents += paid
+	e.metrics.DividendsCents += paid
+	e.metrics.DividendEvents++
 }
 
 func (e *engine) signal() {
 	e.pending = intent{}
 
 	if e.pos.open {
-		if e.tape.Exit() {
+		if e.tape.Exit(e.plan.Leg(e.pos.short)) {
 			e.pending = intent{kind: intentExit}
 		}
 		return
 	}
 
-	if !e.tape.Entry() {
+	// Long is offered the bar first. A spec whose two entries fire on the same close has
+	// to resolve to one position somehow, and a fixed order is the only resolution that
+	// stays deterministic across runs.
+	for _, short := range []bool{false, true} {
+		leg := e.plan.Leg(short)
+		if !leg.Trades() || !e.tape.Entry(leg) {
+			continue
+		}
+
+		stop, ok := e.bracketFor(leg.Stop)
+		if !ok {
+			e.metrics.SkippedEntries++
+			return
+		}
+
+		target, ok := e.bracketFor(leg.Target)
+		if !ok {
+			e.metrics.SkippedEntries++
+			return
+		}
+
+		e.pending = intent{kind: intentEnter, short: short, stop: stop, target: target}
 		return
 	}
-
-	stop, ok := e.bracketFor(e.plan.Stop)
-	if !ok {
-		e.metrics.SkippedEntries++
-		return
-	}
-
-	target, ok := e.bracketFor(e.plan.Target)
-	if !ok {
-		e.metrics.SkippedEntries++
-		return
-	}
-
-	e.pending = intent{kind: intentEnter, stop: stop, target: target}
 }
 
 func (e *engine) bracketFor(level *strategy.Bracket) (bracket, bool) {
@@ -169,12 +208,25 @@ func (e *engine) fill(candle market.Candle) {
 	case pending.kind == intentEnter && !e.pos.open:
 		e.enter(candle, pending)
 	case pending.kind == intentExit && e.pos.open:
-		e.exit(candle, barOf(candle), Order{Kind: OrderMarket, Side: Sell}, ReasonSignal)
+		e.exit(candle, barOf(candle), Order{Kind: OrderMarket, Side: e.closingSide()}, ReasonSignal)
 	}
 }
 
+// A long is opened by buying and closed by selling; a short is the mirror. Everything
+// downstream reads the direction off the position rather than assuming one.
+func (e *engine) closingSide() OrderSide {
+	if e.pos.short {
+		return Buy
+	}
+	return Sell
+}
+
 func (e *engine) enter(candle market.Candle, want intent) {
-	order := Order{Kind: OrderMarket, Side: Buy}
+	side := Buy
+	if want.short {
+		side = Sell
+	}
+	order := Order{Kind: OrderMarket, Side: side}
 
 	raw, ok := order.Fill(barOf(candle))
 	if !ok {
@@ -194,17 +246,25 @@ func (e *engine) enter(candle market.Candle, want intent) {
 
 	notional := e.costing.Notional(qty, price)
 	fees := e.costing.Fees(notional)
-	e.cash -= notional + fees
+
+	// Selling short pays the proceeds into cash and leaves the shares owed; the debt is
+	// carried by marking the position at every close rather than by holding a negative.
+	if want.short {
+		e.cash += notional - fees
+	} else {
+		e.cash -= notional + fees
+	}
 
 	e.pos = position{
 		open:       true,
+		short:      want.short,
 		qty:        qty,
 		entryTS:    candle.TS,
 		entryPrice: price,
 		entryCents: notional,
 		feesCents:  fees,
-		stop:       want.stop.level(price, false),
-		target:     want.target.level(price, true),
+		stop:       want.stop.level(price, want.short),
+		target:     want.target.level(price, !want.short),
 	}
 }
 
@@ -214,8 +274,9 @@ func (e *engine) brackets(candle market.Candle) {
 	}
 
 	bar := barOf(candle)
-	stop := Order{Kind: OrderStop, Side: Sell, Price: e.pos.stop}
-	target := Order{Kind: OrderLimit, Side: Sell, Price: e.pos.target}
+	side := e.closingSide()
+	stop := Order{Kind: OrderStop, Side: side, Price: e.pos.stop}
+	target := Order{Kind: OrderLimit, Side: side, Price: e.pos.target}
 
 	hitStop := e.pos.stop > 0 && resting(stop, bar)
 	hitTarget := e.pos.target > 0 && resting(target, bar)
@@ -237,7 +298,7 @@ func (e *engine) closeOut(candle market.Candle) {
 	if !e.pos.open {
 		return
 	}
-	e.exit(candle, closeOf(candle), Order{Kind: OrderMarket, Side: Sell}, ReasonEndOfRun)
+	e.exit(candle, closeOf(candle), Order{Kind: OrderMarket, Side: e.closingSide()}, ReasonEndOfRun)
 }
 
 func (e *engine) exit(candle market.Candle, bar Bar, order Order, reason string) {
@@ -249,21 +310,29 @@ func (e *engine) exit(candle market.Candle, bar Bar, order Order, reason string)
 	price := e.costing.Fill(order, raw)
 	notional := e.costing.Notional(e.pos.qty, price)
 	fees := e.costing.Fees(notional)
-	e.cash += notional - fees
+
+	gross := notional - e.pos.entryCents
+	if e.pos.short {
+		e.cash -= notional + fees
+		gross = e.pos.entryCents - notional
+	} else {
+		e.cash += notional - fees
+	}
 
 	total := e.pos.feesCents + fees
 	e.seq++
 	e.trades = append(e.trades, Trade{
-		Seq:        e.seq,
-		Side:       SideLong,
-		Qty:        e.pos.qty,
-		EntryTS:    e.pos.entryTS,
-		EntryPrice: e.pos.entryPrice,
-		ExitTS:     candle.TS,
-		ExitPrice:  price,
-		PnLCents:   notional - e.pos.entryCents - total,
-		FeesCents:  total,
-		ExitReason: reason,
+		Seq:            e.seq,
+		Side:           sideName(e.pos.short),
+		Qty:            e.pos.qty,
+		EntryTS:        e.pos.entryTS,
+		EntryPrice:     e.pos.entryPrice,
+		ExitTS:         candle.TS,
+		ExitPrice:      price,
+		PnLCents:       gross + e.pos.divCents - total,
+		FeesCents:      total,
+		DividendsCents: e.pos.divCents,
+		ExitReason:     reason,
 	})
 
 	e.pos = position{}
@@ -272,7 +341,11 @@ func (e *engine) exit(candle market.Candle, bar Bar, order Order, reason string)
 func (e *engine) mark(candle market.Candle) {
 	equity := e.cash
 	if e.pos.open {
-		equity += e.costing.Notional(e.pos.qty, candle.Close)
+		held := e.costing.Notional(e.pos.qty, candle.Close)
+		if e.pos.short {
+			held = -held
+		}
+		equity += held
 		e.metrics.BarsInMarket++
 	}
 

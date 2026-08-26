@@ -21,6 +21,10 @@ import (
 const (
 	MaxBars = market.DefaultCandleLimit
 
+	// IndexTicker is the benchmark every run is measured against. brapi answers it with 401
+	// until the token is Pro, so a missing series is reported, never fatal.
+	IndexTicker = "^BVSP"
+
 	pollInterval  = 2 * time.Second
 	sweepInterval = 5 * time.Minute
 	runTimeout    = 10 * time.Minute
@@ -34,6 +38,7 @@ type Runner struct {
 	queries *database.Queries
 	candles *market.CandleService
 	cal     *market.Calendar
+	rates   *market.Rates
 	log     *slog.Logger
 	workers int
 	poll    time.Duration
@@ -41,7 +46,7 @@ type Runner struct {
 	wg      sync.WaitGroup
 }
 
-func NewRunner(pool *pgxpool.Pool, cal *market.Calendar, log *slog.Logger) *Runner {
+func NewRunner(pool *pgxpool.Pool, cal *market.Calendar, rates *market.Rates, log *slog.Logger) *Runner {
 	workers := Workers()
 
 	return &Runner{
@@ -49,6 +54,7 @@ func NewRunner(pool *pgxpool.Pool, cal *market.Calendar, log *slog.Logger) *Runn
 		queries: database.New(pool),
 		candles: market.NewCandleService(pool, cal),
 		cal:     cal,
+		rates:   rates,
 		log:     log,
 		workers: workers,
 		poll:    pollInterval,
@@ -215,13 +221,38 @@ func (r *Runner) execute(ctx context.Context, row database.BacktestRun) (Result,
 	}
 
 	return Run(Request{
-		Plan:      plan,
-		Symbol:    Symbol{Ticker: symbol.Ticker, LotSize: int64(symbol.LotSize), TickSize: symbol.TickSize},
-		Timeframe: timeframe,
-		Capital:   row.CapitalCents,
-		Prime:     prime,
-		Candles:   series.Candles,
+		Plan:        plan,
+		Symbol:      Symbol{Ticker: symbol.Ticker, LotSize: int64(symbol.LotSize), TickSize: symbol.TickSize},
+		Timeframe:   timeframe,
+		Capital:     row.CapitalCents,
+		Prime:       prime,
+		Candles:     series.Candles,
+		Index:       r.index(ctx, symbol.ID, timeframe, from, to),
+		IndexSymbol: IndexTicker,
+		Rates:       r.rates,
+		BarsPerYear: market.BarsPerYear(r.cal, timeframe),
 	})
+}
+
+func (r *Runner) index(ctx context.Context, against int64, tf market.Timeframe, from, to time.Time) []market.Candle {
+	symbol, err := r.queries.GetSymbolByTicker(ctx, IndexTicker)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			r.log.Warn("reading the benchmark symbol", slog.String("ticker", IndexTicker), slog.Any("err", err))
+		}
+		return nil
+	}
+	if symbol.ID == against {
+		return nil
+	}
+
+	series, err := r.candles.Load(ctx, symbol.ID, tf, from, to, MaxBars)
+	if err != nil {
+		r.log.Warn("reading benchmark candles", slog.String("ticker", IndexTicker), slog.Any("err", err))
+		return nil
+	}
+
+	return series.Candles
 }
 
 func (r *Runner) finish(ctx context.Context, row database.BacktestRun, result Result) error {
@@ -245,17 +276,18 @@ func (r *Runner) finish(ctx context.Context, row database.BacktestRun, result Re
 		trades := make([]database.CreateBacktestTradesParams, 0, len(result.Trades))
 		for _, trade := range result.Trades {
 			trades = append(trades, database.CreateBacktestTradesParams{
-				RunID:      row.ID,
-				Seq:        trade.Seq,
-				Side:       trade.Side,
-				Qty:        trade.Qty,
-				EntryTs:    trade.EntryTS,
-				EntryPrice: trade.EntryPrice,
-				ExitTs:     &trade.ExitTS,
-				ExitPrice:  &trade.ExitPrice,
-				PnlCents:   &trade.PnLCents,
-				FeesCents:  trade.FeesCents,
-				ExitReason: &trade.ExitReason,
+				RunID:          row.ID,
+				Seq:            trade.Seq,
+				Side:           trade.Side,
+				Qty:            trade.Qty,
+				EntryTs:        trade.EntryTS,
+				EntryPrice:     trade.EntryPrice,
+				ExitTs:         &trade.ExitTS,
+				ExitPrice:      &trade.ExitPrice,
+				PnlCents:       &trade.PnLCents,
+				FeesCents:      trade.FeesCents,
+				DividendsCents: trade.DividendsCents,
+				ExitReason:     &trade.ExitReason,
 			})
 		}
 		if _, err := inTx.CreateBacktestTrades(writeCtx, trades); err != nil {
@@ -265,11 +297,13 @@ func (r *Runner) finish(ctx context.Context, row database.BacktestRun, result Re
 
 	if len(result.Equity) > 0 {
 		equity := make([]database.CreateBacktestEquityParams, 0, len(result.Equity))
-		for _, point := range result.Equity {
+		for i, point := range result.Equity {
 			equity = append(equity, database.CreateBacktestEquityParams{
 				RunID:       row.ID,
 				Ts:          point.TS,
 				EquityCents: point.Cents,
+				HoldCents:   curveAt(result.Hold, i),
+				IndexCents:  curveAt(result.Index, i),
 			})
 		}
 		if _, err := inTx.CreateBacktestEquity(writeCtx, equity); err != nil {
@@ -307,4 +341,11 @@ func (r *Runner) requeue(ctx context.Context, row database.BacktestRun) error {
 
 func (r *Runner) detach(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), limit)
+}
+
+func curveAt(curve []int64, i int) *int64 {
+	if i < 0 || i >= len(curve) {
+		return nil
+	}
+	return &curve[i]
 }

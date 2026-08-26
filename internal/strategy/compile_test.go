@@ -70,20 +70,20 @@ func TestOneIndicatorCanBackSeveralSlots(t *testing.T) {
 func TestBracketsLeaveTheConditionTree(t *testing.T) {
 	plan := mustCompile(t, planExample)
 
-	if plan.Exit == nil {
+	if plan.Long.Exit == nil {
 		t.Fatal("the exit lost the crossing it was written with")
 	}
-	if plan.Stop == nil || plan.Target == nil {
-		t.Fatalf("stop = %v, target = %v, want both hoisted out", plan.Stop, plan.Target)
+	if plan.Long.Stop == nil || plan.Long.Target == nil {
+		t.Fatalf("stop = %v, target = %v, want both hoisted out", plan.Long.Stop, plan.Long.Target)
 	}
-	if plan.Stop.Slot < 0 {
+	if plan.Long.Stop.Slot < 0 {
 		t.Error("an atr stop compiled without a slot to read its range from")
 	}
-	if plan.Target.Slot != -1 {
-		t.Errorf("a percentage target claimed slot %d, want none", plan.Target.Slot)
+	if plan.Long.Target.Slot != -1 {
+		t.Errorf("a percentage target claimed slot %d, want none", plan.Long.Target.Slot)
 	}
-	if plan.Exit.depth() != 1 {
-		t.Errorf("exit depth = %d, want the one bar a crossing looks back", plan.Exit.depth())
+	if plan.Long.Exit.depth() != 1 {
+		t.Errorf("exit depth = %d, want the one bar a crossing looks back", plan.Long.Exit.depth())
 	}
 }
 
@@ -92,16 +92,16 @@ func TestAnExitOfNothingButBracketsHasNoRule(t *testing.T) {
 		exit: `{"long": {"any": [{"stop_loss": ` + pctStop + `}, {"take_profit": {"type": "pct", "value": 0.05}}]}}`,
 	}.json())
 
-	if both.Exit != nil {
+	if both.Long.Exit != nil {
 		t.Error("an exit made only of brackets left a condition behind")
 	}
-	if both.Stop == nil || both.Target == nil {
+	if both.Long.Stop == nil || both.Long.Target == nil {
 		t.Error("the brackets did not survive the hoist")
 	}
 
 	alone := mustCompile(t, parts{exit: `{"long": {"stop_loss": ` + pctStop + `}}`}.json())
-	if alone.Exit != nil || alone.Stop == nil {
-		t.Errorf("exit rule = %v, stop = %v, want only a stop", alone.Exit, alone.Stop)
+	if alone.Long.Exit != nil || alone.Long.Stop == nil {
+		t.Errorf("exit rule = %v, stop = %v, want only a stop", alone.Long.Exit, alone.Long.Stop)
 	}
 }
 
@@ -121,8 +121,8 @@ func TestABracketSharesTheAverageRangeAnInputAlreadyBuilt(t *testing.T) {
 	if built != 1 {
 		t.Errorf("atr:14 was instantiated %d times, want once", built)
 	}
-	if plan.Stop.Slot != plan.Index["vol"] {
-		t.Errorf("the stop reads slot %d and the input reads slot %d, want the same", plan.Stop.Slot, plan.Index["vol"])
+	if plan.Long.Stop.Slot != plan.Index["vol"] {
+		t.Errorf("the stop reads slot %d and the input reads slot %d, want the same", plan.Long.Stop.Slot, plan.Index["vol"])
 	}
 }
 
@@ -181,7 +181,7 @@ func TestThePlanKnowsHowFarBackItsRulesRead(t *testing.T) {
 func TestALiteralNeedsNoHistory(t *testing.T) {
 	plan := mustCompile(t, parts{entry: `{"long": {"crosses_above": ["close", 10]}}`, exit: "null"}.json())
 
-	for _, term := range plan.Entry.(compareRule).terms {
+	for _, term := range plan.Long.Entry.(compareRule).terms {
 		if term.Kind == OperandLiteral && term.Slot != -1 {
 			t.Errorf("a literal claimed slot %d", term.Slot)
 		}

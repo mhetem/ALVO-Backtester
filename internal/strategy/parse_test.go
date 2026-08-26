@@ -323,10 +323,25 @@ func TestASpecPointsAtWhatItCannotAccept(t *testing.T) {
 			"whole number between 1",
 		},
 		{
-			"a short side nobody models yet",
-			parts{entry: `{"short": {"gt": ["fast", "slow"]}}`},
-			"/entry/short",
-			`no such field "short"`,
+			"a side that is neither long nor short",
+			parts{entry: `{"sideways": {"gt": ["fast", "slow"]}}`},
+			"/entry/sideways",
+			`no such field "sideways"`,
+		},
+		{
+			"an entry with no side at all",
+			parts{entry: `{}`},
+			"/entry",
+			"needs a long rule, a short rule, or both",
+		},
+		{
+			"a short exit with no short entry",
+			parts{
+				entry: `{"long": {"gt": ["fast", "slow"]}}`,
+				exit:  `{"short": {"lt": ["fast", "slow"]}}`,
+			},
+			"/exit/short",
+			"there is no short entry",
 		},
 	}
 

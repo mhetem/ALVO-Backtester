@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import BacktestPanel from './lib/BacktestPanel.svelte';
   import Chart from './lib/Chart.svelte';
   import IndicatorPanel from './lib/IndicatorPanel.svelte';
   import IndicatorPicker from './lib/IndicatorPicker.svelte';
@@ -17,6 +18,7 @@
     type SymbolRow,
     type Timeframe,
   } from './lib/api';
+  import { marksOf, type Trade, type TradeMark } from './lib/backtest';
   import { fetchCatalog, type Catalog, type CatalogEntry } from './lib/catalog';
   import { formatChange, formatPrice, formatStamp, formatVolume } from './lib/format';
   import {
@@ -65,6 +67,10 @@
   let pickerOpen = $state(false);
   let signInOpen = $state(false);
   let strategyOpen = $state(false);
+  let backtestOpen = $state(false);
+
+  let marks = $state<TradeMark[]>([]);
+  let marksFor = $state('');
 
   let layoutsFor = '';
   let restored = false;
@@ -75,6 +81,10 @@
   const full = $derived(indicators.length >= ceiling);
 
   const activeLayout = $derived(layouts.find((layout) => layout.id === activeLayoutId) ?? null);
+
+  // Markers belong to the symbol they were run against; charting another ticker with
+  // them still drawn would put fills on candles they never touched.
+  const shownMarks = $derived(marksFor === symbol ? marks : []);
 
   const dirty = $derived(
     activeLayout === null
@@ -228,6 +238,11 @@
     writeWorking(toStored(indicators), null);
   }
 
+  function showTrades(trades: Trade[], ticker: string) {
+    marks = marksOf(trades);
+    marksFor = ticker;
+  }
+
   function signedIn(who: User) {
     user = who;
     signInOpen = false;
@@ -351,6 +366,9 @@
       <button type="button" class:on={strategyOpen} onclick={() => (strategyOpen = true)}>
         Strategies
       </button>
+      <button type="button" class:on={backtestOpen} onclick={() => (backtestOpen = true)}>
+        Backtests{shownMarks.length > 0 ? ` · ${shownMarks.length}` : ''}
+      </button>
     </div>
 
     <span class="count">{count} bars loaded</span>
@@ -379,6 +397,7 @@
       {mode}
       {indicators}
       {colors}
+      trades={shownMarks}
       onHover={(bar) => (hovered = bar)}
       onLoaded={(bar, total) => {
         latest = bar;
@@ -424,6 +443,16 @@
 
 {#if strategyOpen}
   <StrategyEditor {catalog} {user} onClose={() => (strategyOpen = false)} />
+{/if}
+
+{#if backtestOpen}
+  <BacktestPanel
+    {symbol}
+    {timeframe}
+    {user}
+    onTrades={showTrades}
+    onClose={() => (backtestOpen = false)}
+  />
 {/if}
 
 <style>

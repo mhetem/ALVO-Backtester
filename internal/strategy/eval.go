@@ -363,9 +363,9 @@ func (t *Tape) Candle() (indicator.Candle, bool) {
 
 func (t *Tape) Bars() int { return t.filled }
 
-func (t *Tape) Entry() bool { return fires(t.plan.Entry, t) }
+func (t *Tape) Entry(leg *Leg) bool { return fires(leg.Entry, t) }
 
-func (t *Tape) Exit() bool { return fires(t.plan.Exit, t) }
+func (t *Tape) Exit(leg *Leg) bool { return fires(leg.Exit, t) }
 
 func (t *Tape) Value(name string) (float64, bool) {
 	slot, ok := t.plan.Index[name]

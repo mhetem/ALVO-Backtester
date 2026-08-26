@@ -6,8 +6,11 @@
     HistogramSeries,
     LineSeries,
     createChart,
+    createSeriesMarkers,
     LineStyle,
     TickMarkType,
+    type ISeriesMarkersPluginApi,
+    type SeriesMarker,
     type IChartApi,
     type ISeriesApi,
     type Logical,
@@ -37,6 +40,7 @@
     toChartTime,
   } from './format';
   import { drawnOutputs, slotOf, HISTOGRAM_OUTPUT, type ActiveIndicator } from './indicators';
+  import type { TradeMark } from './backtest';
   import { Band, bandPairOf, withAlpha, BAND_ALPHA, type BandPoint } from './band';
   import {
     barOptions,
@@ -54,11 +58,12 @@
     mode: ChartMode;
     indicators: ActiveIndicator[];
     colors: string[];
+    trades: TradeMark[];
     onHover: (bar: Bar | null) => void;
     onLoaded: (latest: Bar | null, count: number) => void;
   };
 
-  let { symbol, timeframe, mode, indicators, colors, onHover, onLoaded }: Props = $props();
+  let { symbol, timeframe, mode, indicators, colors, trades, onHover, onLoaded }: Props = $props();
 
   type PeriodTick = {
     key: string;
@@ -106,6 +111,7 @@
 
   let chart: IChartApi | null = null;
   let series: ISeriesApi<SeriesType> | null = null;
+  let markers: ISeriesMarkersPluginApi<Time> | null = null;
   let scheme: MediaQueryList | null = null;
   let sizing: ResizeObserver | null = null;
   let bars: Bar[] = [];
@@ -235,10 +241,53 @@
         ? chart.addSeries(BarSeries, barOptions(tone), 0)
         : chart.addSeries(CandlestickSeries, candlestickOptions(tone), 0);
     drawn = mode;
+    markers = createSeriesMarkers(series, []);
 
     if (bars.length > 0) {
       series.setData(seriesData(bars));
     }
+    drawMarkers();
+  }
+
+  // Trades are drawn against the loaded page, so a fill outside the visible range simply
+  // has no marker rather than snapping to the nearest bar it can find.
+  function drawMarkers() {
+    if (!markers) {
+      return;
+    }
+    if (trades.length === 0 || bars.length === 0) {
+      markers.setMarkers([]);
+      return;
+    }
+
+    const tone = palette();
+    const first = bars[0].time;
+    const last = bars[bars.length - 1].time;
+    const marks: SeriesMarker<Time>[] = [];
+
+    for (const trade of trades) {
+      if (trade.entry >= first && trade.entry <= last) {
+        marks.push({
+          time: toChartTime(trade.entry) as UTCTimestamp,
+          position: 'belowBar',
+          shape: 'arrowUp',
+          color: tone.up,
+          text: `#${trade.seq} in`,
+        });
+      }
+      if (trade.exit !== null && trade.exit >= first && trade.exit <= last) {
+        marks.push({
+          time: toChartTime(trade.exit) as UTCTimestamp,
+          position: 'aboveBar',
+          shape: 'arrowDown',
+          color: trade.won ? tone.up : tone.down,
+          text: `#${trade.seq} ${trade.reason}`,
+        });
+      }
+    }
+
+    marks.sort((a, b) => Number(a.time) - Number(b.time));
+    markers.setMarkers(marks);
   }
 
   function applyScheme() {
@@ -248,6 +297,7 @@
     const tone = palette();
     chart.applyOptions(chartOptions(tone, timeframe !== '1d'));
     series?.applyOptions(mode === 'bars' ? barOptions(tone) : candlestickOptions(tone));
+    drawMarkers();
   }
 
   function ensureChart() {
@@ -571,6 +621,7 @@
       empty = bars.length === 0;
 
       series?.setData(seriesData(bars));
+      drawMarkers();
       chart?.timeScale().fitContent();
       applyIndicatorData();
       onLoaded(bars.at(-1) ?? null, bars.length);
@@ -623,6 +674,7 @@
       hovered = null;
 
       series?.setData(seriesData(bars));
+      drawMarkers();
       applyIndicatorData();
       onLoaded(bars.at(-1) ?? null, bars.length);
 
@@ -695,6 +747,7 @@
       reindex();
 
       series?.setData(seriesData(bars));
+      drawMarkers();
       applyIndicatorData();
       onLoaded(bars.at(-1) ?? null, bars.length);
 
@@ -755,6 +808,14 @@
   });
 
   $effect(() => {
+    void trades.map((trade) => `${trade.seq}:${trade.entry}:${trade.exit}`).join(',');
+    if (!chart) {
+      return;
+    }
+    drawMarkers();
+  });
+
+  $effect(() => {
     if (mode === drawn || !chart) {
       return;
     }
@@ -781,6 +842,7 @@
     chart?.remove();
     chart = null;
     series = null;
+    markers = null;
     handles = [];
     clouds = [];
   });

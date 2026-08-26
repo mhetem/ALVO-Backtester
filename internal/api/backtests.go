@@ -204,6 +204,10 @@ func queuedBacktest(row database.BacktestRun, ticker string) backtestBody {
 	}
 }
 
+func listedBacktest(row database.ListBacktestRunsRow) backtestBody {
+	return storedBacktest(database.GetBacktestRunRow(row))
+}
+
 func storedBacktest(row database.GetBacktestRunRow) backtestBody {
 	body := backtestBody{
 		ID:           row.ID,

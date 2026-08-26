@@ -10,13 +10,21 @@ import (
 )
 
 const (
-	SideLong = "long"
+	SideLong  = "long"
+	SideShort = "short"
 
 	ReasonSignal   = "signal"
 	ReasonStop     = "stop"
 	ReasonTarget   = "target"
 	ReasonEndOfRun = "end_of_run"
 )
+
+func sideName(short bool) string {
+	if short {
+		return SideShort
+	}
+	return SideLong
+}
 
 type Symbol struct {
 	Ticker   string
@@ -25,25 +33,30 @@ type Symbol struct {
 }
 
 type Request struct {
-	Plan      *strategy.Plan
-	Symbol    Symbol
-	Timeframe market.Timeframe
-	Capital   int64
-	Prime     []market.Candle
-	Candles   []market.Candle
+	Plan        *strategy.Plan
+	Symbol      Symbol
+	Timeframe   market.Timeframe
+	Capital     int64
+	Prime       []market.Candle
+	Candles     []market.Candle
+	Index       []market.Candle
+	IndexSymbol string
+	Rates       *market.Rates
+	BarsPerYear float64
 }
 
 type Trade struct {
-	Seq        int32     `json:"seq"`
-	Side       string    `json:"side"`
-	Qty        int64     `json:"qty"`
-	EntryTS    time.Time `json:"entry_ts"`
-	EntryPrice float64   `json:"entry_price"`
-	ExitTS     time.Time `json:"exit_ts"`
-	ExitPrice  float64   `json:"exit_price"`
-	PnLCents   int64     `json:"pnl_cents"`
-	FeesCents  int64     `json:"fees_cents"`
-	ExitReason string    `json:"exit_reason"`
+	Seq            int32     `json:"seq"`
+	Side           string    `json:"side"`
+	Qty            int64     `json:"qty"`
+	EntryTS        time.Time `json:"entry_ts"`
+	EntryPrice     float64   `json:"entry_price"`
+	ExitTS         time.Time `json:"exit_ts"`
+	ExitPrice      float64   `json:"exit_price"`
+	PnLCents       int64     `json:"pnl_cents"`
+	FeesCents      int64     `json:"fees_cents"`
+	DividendsCents int64     `json:"dividends_cents"`
+	ExitReason     string    `json:"exit_reason"`
 }
 
 type EquityPoint struct {
@@ -54,6 +67,8 @@ type EquityPoint struct {
 type Result struct {
 	Trades  []Trade       `json:"trades"`
 	Equity  []EquityPoint `json:"equity"`
+	Hold    []int64       `json:"-"`
+	Index   []int64       `json:"-"`
 	Metrics Metrics       `json:"metrics"`
 }
 

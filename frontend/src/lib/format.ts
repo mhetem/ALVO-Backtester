@@ -135,3 +135,58 @@ export function formatChange(open: number, close: number): string {
   const pct = ((close - open) / open) * 100;
   return `${pct >= 0 ? '+' : ''}${price.format(pct)}%`;
 }
+
+const money = new Intl.NumberFormat('pt-BR', {
+  style: 'currency',
+  currency: 'BRL',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const compactMoney = new Intl.NumberFormat('pt-BR', {
+  style: 'currency',
+  currency: 'BRL',
+  notation: 'compact',
+  maximumFractionDigits: 2,
+});
+
+export function formatCents(cents: number): string {
+  return money.format(cents / 100);
+}
+
+export function formatCentsShort(cents: number): string {
+  return Math.abs(cents) >= 1e8 ? compactMoney.format(cents / 100) : money.format(cents / 100);
+}
+
+export function formatSignedCents(cents: number): string {
+  return `${cents > 0 ? '+' : ''}${formatCents(cents)}`;
+}
+
+export function formatPct(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) {
+    return value > 0 ? '∞' : '—';
+  }
+  return `${value.toFixed(digits)}%`;
+}
+
+export function formatSignedPct(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) {
+    return value > 0 ? '∞' : '—';
+  }
+  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}%`;
+}
+
+export function formatRatio(value: number, digits = 2): string {
+  if (!Number.isFinite(value)) {
+    return value > 0 ? '∞' : '—';
+  }
+  return value.toFixed(digits);
+}
+
+export function formatDay(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) {
+    return '—';
+  }
+  return formatStamp(Math.floor(at.getTime() / 1000), false);
+}

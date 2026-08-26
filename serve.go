@@ -23,6 +23,11 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 
+	rates, err := market.LoadRates(dataFS, market.RatesFile)
+	if err != nil {
+		return err
+	}
+
 	pool, err := openPool(startCtx, cfg, log)
 	if err != nil {
 		return err
@@ -34,7 +39,7 @@ func runServe(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 
-	runner := backtest.NewRunner(pool, calendar, log)
+	runner := backtest.NewRunner(pool, calendar, rates, log)
 	runner.Start(ctx)
 
 	srv := &http.Server{

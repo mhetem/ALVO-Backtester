@@ -62,10 +62,23 @@ func (q *Queries) CountActiveBacktestRuns(ctx context.Context, userID uuid.UUID)
 	return count, err
 }
 
+const countBacktestEquity = `-- name: CountBacktestEquity :one
+SELECT COUNT(*) FROM backtest_equity WHERE run_id = $1
+`
+
+func (q *Queries) CountBacktestEquity(ctx context.Context, runID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countBacktestEquity, runID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 type CreateBacktestEquityParams struct {
 	RunID       uuid.UUID `json:"run_id"`
 	Ts          time.Time `json:"ts"`
 	EquityCents int64     `json:"equity_cents"`
+	HoldCents   *int64    `json:"hold_cents"`
+	IndexCents  *int64    `json:"index_cents"`
 }
 
 const createBacktestRun = `-- name: CreateBacktestRun :one
@@ -123,17 +136,18 @@ func (q *Queries) CreateBacktestRun(ctx context.Context, arg CreateBacktestRunPa
 }
 
 type CreateBacktestTradesParams struct {
-	RunID      uuid.UUID  `json:"run_id"`
-	Seq        int32      `json:"seq"`
-	Side       string     `json:"side"`
-	Qty        int64      `json:"qty"`
-	EntryTs    time.Time  `json:"entry_ts"`
-	EntryPrice float64    `json:"entry_price"`
-	ExitTs     *time.Time `json:"exit_ts"`
-	ExitPrice  *float64   `json:"exit_price"`
-	PnlCents   *int64     `json:"pnl_cents"`
-	FeesCents  int64      `json:"fees_cents"`
-	ExitReason *string    `json:"exit_reason"`
+	RunID          uuid.UUID  `json:"run_id"`
+	Seq            int32      `json:"seq"`
+	Side           string     `json:"side"`
+	Qty            int64      `json:"qty"`
+	EntryTs        time.Time  `json:"entry_ts"`
+	EntryPrice     float64    `json:"entry_price"`
+	ExitTs         *time.Time `json:"exit_ts"`
+	ExitPrice      *float64   `json:"exit_price"`
+	PnlCents       *int64     `json:"pnl_cents"`
+	FeesCents      int64      `json:"fees_cents"`
+	DividendsCents int64      `json:"dividends_cents"`
+	ExitReason     *string    `json:"exit_reason"`
 }
 
 const failBacktestRun = `-- name: FailBacktestRun :exec
@@ -226,6 +240,181 @@ func (q *Queries) GetBacktestRun(ctx context.Context, arg GetBacktestRunParams) 
 		&i.Ticker,
 	)
 	return i, err
+}
+
+const listBacktestEquity = `-- name: ListBacktestEquity :many
+SELECT ts, equity_cents, hold_cents, index_cents
+FROM (
+    SELECT ts, equity_cents, hold_cents, index_cents,
+           ROW_NUMBER() OVER (ORDER BY ts) AS n,
+           COUNT(*) OVER () AS total
+    FROM backtest_equity
+    WHERE run_id = $1
+) points
+WHERE n % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 1 OR n = total
+ORDER BY ts
+`
+
+type ListBacktestEquityParams struct {
+	RunID   uuid.UUID `json:"run_id"`
+	Column2 int64     `json:"column_2"`
+}
+
+type ListBacktestEquityRow struct {
+	Ts          time.Time `json:"ts"`
+	EquityCents int64     `json:"equity_cents"`
+	HoldCents   *int64    `json:"hold_cents"`
+	IndexCents  *int64    `json:"index_cents"`
+}
+
+func (q *Queries) ListBacktestEquity(ctx context.Context, arg ListBacktestEquityParams) ([]ListBacktestEquityRow, error) {
+	rows, err := q.db.Query(ctx, listBacktestEquity, arg.RunID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBacktestEquityRow{}
+	for rows.Next() {
+		var i ListBacktestEquityRow
+		if err := rows.Scan(
+			&i.Ts,
+			&i.EquityCents,
+			&i.HoldCents,
+			&i.IndexCents,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBacktestRuns = `-- name: ListBacktestRuns :many
+SELECT r.id, r.user_id, r.strategy_id, r.spec, r.symbol_id, r.timeframe, r.start_date, r.end_date, r.capital_cents, r.status, r.metrics, r.error, r.created_at, r.started_at, r.finished_at, s.ticker
+FROM backtest_runs r
+JOIN symbols s ON s.id = r.symbol_id
+WHERE r.user_id = $1
+ORDER BY r.created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListBacktestRunsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Limit  int32     `json:"limit"`
+	Offset int32     `json:"offset"`
+}
+
+type ListBacktestRunsRow struct {
+	ID           uuid.UUID  `json:"id"`
+	UserID       uuid.UUID  `json:"user_id"`
+	StrategyID   uuid.UUID  `json:"strategy_id"`
+	Spec         []byte     `json:"spec"`
+	SymbolID     int64      `json:"symbol_id"`
+	Timeframe    string     `json:"timeframe"`
+	StartDate    time.Time  `json:"start_date"`
+	EndDate      time.Time  `json:"end_date"`
+	CapitalCents int64      `json:"capital_cents"`
+	Status       string     `json:"status"`
+	Metrics      []byte     `json:"metrics"`
+	Error        *string    `json:"error"`
+	CreatedAt    time.Time  `json:"created_at"`
+	StartedAt    *time.Time `json:"started_at"`
+	FinishedAt   *time.Time `json:"finished_at"`
+	Ticker       string     `json:"ticker"`
+}
+
+func (q *Queries) ListBacktestRuns(ctx context.Context, arg ListBacktestRunsParams) ([]ListBacktestRunsRow, error) {
+	rows, err := q.db.Query(ctx, listBacktestRuns, arg.UserID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBacktestRunsRow{}
+	for rows.Next() {
+		var i ListBacktestRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.StrategyID,
+			&i.Spec,
+			&i.SymbolID,
+			&i.Timeframe,
+			&i.StartDate,
+			&i.EndDate,
+			&i.CapitalCents,
+			&i.Status,
+			&i.Metrics,
+			&i.Error,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.Ticker,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBacktestTrades = `-- name: ListBacktestTrades :many
+SELECT seq, side, qty, entry_ts, entry_price, exit_ts, exit_price,
+       pnl_cents, fees_cents, dividends_cents, exit_reason
+FROM backtest_trades
+WHERE run_id = $1
+ORDER BY seq
+`
+
+type ListBacktestTradesRow struct {
+	Seq            int32      `json:"seq"`
+	Side           string     `json:"side"`
+	Qty            int64      `json:"qty"`
+	EntryTs        time.Time  `json:"entry_ts"`
+	EntryPrice     float64    `json:"entry_price"`
+	ExitTs         *time.Time `json:"exit_ts"`
+	ExitPrice      *float64   `json:"exit_price"`
+	PnlCents       *int64     `json:"pnl_cents"`
+	FeesCents      int64      `json:"fees_cents"`
+	DividendsCents int64      `json:"dividends_cents"`
+	ExitReason     *string    `json:"exit_reason"`
+}
+
+func (q *Queries) ListBacktestTrades(ctx context.Context, runID uuid.UUID) ([]ListBacktestTradesRow, error) {
+	rows, err := q.db.Query(ctx, listBacktestTrades, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBacktestTradesRow{}
+	for rows.Next() {
+		var i ListBacktestTradesRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.Side,
+			&i.Qty,
+			&i.EntryTs,
+			&i.EntryPrice,
+			&i.ExitTs,
+			&i.ExitPrice,
+			&i.PnlCents,
+			&i.FeesCents,
+			&i.DividendsCents,
+			&i.ExitReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const requeueBacktestRun = `-- name: RequeueBacktestRun :exec

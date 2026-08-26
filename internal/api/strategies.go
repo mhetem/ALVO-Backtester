@@ -28,6 +28,13 @@ type strategyRequest struct {
 	Spec        json.RawMessage `json:"spec"`
 }
 
+type legBody struct {
+	Trades     bool `json:"trades"`
+	RuleExit   bool `json:"rule_exit"`
+	StopLoss   bool `json:"stop_loss"`
+	TakeProfit bool `json:"take_profit"`
+}
+
 type planBody struct {
 	Inputs     int      `json:"inputs"`
 	Indicators []string `json:"indicators"`
@@ -35,9 +42,8 @@ type planBody struct {
 	Warmup     int      `json:"warmup"`
 	PrimeBars  int      `json:"prime_bars"`
 	Depth      int      `json:"depth"`
-	RuleExit   bool     `json:"rule_exit"`
-	StopLoss   bool     `json:"stop_loss"`
-	TakeProfit bool     `json:"take_profit"`
+	Long       legBody  `json:"long"`
+	Short      legBody  `json:"short"`
 }
 
 type strategyBody struct {
@@ -341,15 +347,23 @@ func describePlan(plan *strategy.Plan) *planBody {
 		Warmup:     plan.Warmup,
 		PrimeBars:  plan.PrimeBars,
 		Depth:      plan.Depth,
-		RuleExit:   plan.Exit != nil,
-		StopLoss:   plan.Stop != nil,
-		TakeProfit: plan.Target != nil,
+		Long:       describeLeg(plan.Long),
+		Short:      describeLeg(plan.Short),
 	}
 	for _, unit := range plan.Units {
 		body.Indicators = append(body.Indicators, unit.Instance.Key)
 	}
 
 	return &body
+}
+
+func describeLeg(leg strategy.Leg) legBody {
+	return legBody{
+		Trades:     leg.Trades(),
+		RuleExit:   leg.Exit != nil,
+		StopLoss:   leg.Stop != nil,
+		TakeProfit: leg.Target != nil,
+	}
 }
 
 func storedStrategy(row database.Strategy, plan *planBody) strategyBody {

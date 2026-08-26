@@ -14,6 +14,8 @@ type BacktestEquity struct {
 	RunID       uuid.UUID `json:"run_id"`
 	Ts          time.Time `json:"ts"`
 	EquityCents int64     `json:"equity_cents"`
+	HoldCents   *int64    `json:"hold_cents"`
+	IndexCents  *int64    `json:"index_cents"`
 }
 
 type BacktestRun struct {
@@ -35,17 +37,18 @@ type BacktestRun struct {
 }
 
 type BacktestTrade struct {
-	RunID      uuid.UUID  `json:"run_id"`
-	Seq        int32      `json:"seq"`
-	Side       string     `json:"side"`
-	Qty        int64      `json:"qty"`
-	EntryTs    time.Time  `json:"entry_ts"`
-	EntryPrice float64    `json:"entry_price"`
-	ExitTs     *time.Time `json:"exit_ts"`
-	ExitPrice  *float64   `json:"exit_price"`
-	PnlCents   *int64     `json:"pnl_cents"`
-	FeesCents  int64      `json:"fees_cents"`
-	ExitReason *string    `json:"exit_reason"`
+	RunID          uuid.UUID  `json:"run_id"`
+	Seq            int32      `json:"seq"`
+	Side           string     `json:"side"`
+	Qty            int64      `json:"qty"`
+	EntryTs        time.Time  `json:"entry_ts"`
+	EntryPrice     float64    `json:"entry_price"`
+	ExitTs         *time.Time `json:"exit_ts"`
+	ExitPrice      *float64   `json:"exit_price"`
+	PnlCents       *int64     `json:"pnl_cents"`
+	FeesCents      int64      `json:"fees_cents"`
+	ExitReason     *string    `json:"exit_reason"`
+	DividendsCents int64      `json:"dividends_cents"`
 }
 
 type BrapiUsage struct {

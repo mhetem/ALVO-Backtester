@@ -14,6 +14,7 @@
     fetchStrategies,
     flagged,
     inputNames,
+    inputRefs,
     nextInputName,
     specFromJSON,
     specToJSON,
@@ -27,6 +28,7 @@
     type PlanSummary,
     type RuleDraft,
     type SavedStrategy,
+    type SideDraft,
     type SizingType,
     type SpecDraft,
   } from './strategy';
@@ -55,7 +57,13 @@
   let busy = $state(false);
 
   const names = $derived(inputNames(spec));
+  const refs = $derived(inputRefs(spec, catalog));
   const groups = $derived(catalog?.groups ?? []);
+
+  const SIDES = [
+    { key: 'long', hint: 'No long rule, so this strategy never buys to open.' },
+    { key: 'short', hint: 'No short rule, so this strategy never sells to open.' },
+  ] as const;
 
   function reset() {
     error = null;
@@ -238,8 +246,22 @@
     return [...PRICE_FIELDS.filter((field) => field !== 'volume'), ...names.filter((held) => held !== input.name)];
   }
 
-  function toggleExit() {
-    edit({ ...spec, exit: spec.exit ? null : blankRule(names) });
+  function setSide(key: 'long' | 'short', patch: Partial<SideDraft>) {
+    edit({ ...spec, [key]: { ...spec[key], ...patch } });
+  }
+
+  function toggleSide(key: 'long' | 'short') {
+    // Dropping a side takes its exit with it: an exit for a position that can never open
+    // is a rule the parser rejects rather than quietly ignores.
+    edit(
+      spec[key].entry
+        ? { ...spec, [key]: { entry: null, exit: null } }
+        : { ...spec, [key]: { entry: blankRule(refs), exit: null } },
+    );
+  }
+
+  function toggleExit(key: 'long' | 'short') {
+    setSide(key, { exit: spec[key].exit ? null : blankRule(refs) });
   }
 
   function setSizing(type: SizingType) {
@@ -423,43 +445,57 @@
             <button type="button" class="add" onclick={addInput}>Add an input</button>
           </div>
 
-          <div class="block">
-            <h3>Enter long when</h3>
-            <RuleNode
-              rule={spec.entry}
-              {names}
-              fault={pointer}
-              brackets={false}
-              at="/entry/long"
-              onChange={(next: RuleDraft) => edit({ ...spec, entry: next })}
-              onRemove={null}
-            />
-          </div>
+          {#each SIDES as side (side.key)}
+            {@const leg = spec[side.key]}
+            <div class="block">
+              <h3>
+                Enter {side.key} when
+                <button type="button" class="toggle" onclick={() => toggleSide(side.key)}>
+                  {leg.entry ? 'remove' : 'add'}
+                </button>
+              </h3>
+              {#if leg.entry}
+                <RuleNode
+                  rule={leg.entry}
+                  names={refs}
+                  fault={pointer}
+                  brackets={false}
+                  at={`/entry/${side.key}`}
+                  onChange={(next: RuleDraft) => setSide(side.key, { entry: next })}
+                  onRemove={null}
+                />
+              {:else}
+                <p class="hint">{side.hint}</p>
+              {/if}
+            </div>
 
-          <div class="block">
-            <h3>
-              Exit when
-              <button type="button" class="toggle" onclick={toggleExit}>
-                {spec.exit ? 'remove' : 'add'}
-              </button>
-            </h3>
-            {#if spec.exit}
-              <RuleNode
-                rule={spec.exit}
-                {names}
-                fault={pointer}
-                brackets={true}
-                at="/exit/long"
-                onChange={(next: RuleDraft) => edit({ ...spec, exit: next })}
-                onRemove={null}
-              />
-            {:else}
-              <p class="hint">
-                With no exit rule a position is held to the end of the backtest — which is how you
-                write buy and hold.
-              </p>
+            {#if leg.entry}
+              <div class="block">
+                <h3>
+                  Exit the {side.key} when
+                  <button type="button" class="toggle" onclick={() => toggleExit(side.key)}>
+                    {leg.exit ? 'remove' : 'add'}
+                  </button>
+                </h3>
+                {#if leg.exit}
+                  <RuleNode
+                    rule={leg.exit}
+                    names={refs}
+                    fault={pointer}
+                    brackets={true}
+                    at={`/exit/${side.key}`}
+                    onChange={(next: RuleDraft) => setSide(side.key, { exit: next })}
+                    onRemove={null}
+                  />
+                {:else}
+                  <p class="hint">
+                    With no exit rule the position is held to the end of the backtest — which is how
+                    you write buy and hold.
+                  </p>
+                {/if}
+              </div>
             {/if}
-          </div>
+          {/each}
 
           <div class="block row">
             <div class="field" class:flagged={flagged(pointer, '/sizing')}>
@@ -535,9 +571,15 @@
       {:else if plan}
         <p class="says">
           {plan.indicators.length} indicator{plan.indicators.length === 1 ? '' : 's'} ·
+          {plan.slots} line{plan.slots === 1 ? '' : 's'} ·
           {plan.warmup} bars of warmup · reads {plan.depth} back
-          {#if plan.stop_loss}· stop{/if}
-          {#if plan.take_profit}· target{/if}
+          {#each SIDES as side (side.key)}
+            {#if plan[side.key].trades}
+              · {side.key}{plan[side.key].stop_loss ? ' + stop' : ''}{plan[side.key].take_profit
+                ? ' + target'
+                : ''}
+            {/if}
+          {/each}
         </p>
       {:else}
         <p class="says">Validate to compile this against the indicator library.</p>

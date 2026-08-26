@@ -1964,9 +1964,9 @@ market data is public and user data is not; this is neither, so the cheaper answ
 >   highlights one box at a time, but a JSON-tab author fixing six things pays six round trips. The
 >   response shape (`{error, pointer}`) has room for a `faults` array whenever that stops being
 >   acceptable.
-> - **Short selling is not modelled.** `entry`/`exit` accept only `long`, and `"short"` is a 400 that
->   says so. Phase 9's second pass adds the side; a Phase 8 spec stays valid when it does, because an
->   added optional key is not a format change.
+> - ~~**Short selling is not modelled.**~~ **Closed after Phase 10** — `entry` and `exit` take
+>   `long`, `short`, or both, and the prediction held exactly: every Phase 8 spec still parses,
+>   because adding an optional key is not a format change.
 > - **Nothing evaluates the brackets yet.** `Plan.Stop` and `Plan.Target` carry the level and, for
 >   `atr`, the slot to read the range from. Turning that into a fill — and deciding the stop wins
 >   when a bar's high and low touch both — is Phase 9's intrabar-ambiguity bullet.
@@ -2050,8 +2050,8 @@ CREATE TABLE backtest_equity (
       ATR stop distance)
 - [x] Round to `lot_size` and `tick_size` from the symbol row. A backtest buying 137 shares of a
       100-lot stock is not a trade that existed
-- [x] Long-only first. Short selling in a second pass — borrow cost and shorting restrictions are
-      their own problem
+- [x] Long-only first. ~~Short selling in a second pass~~ — **the second pass landed after Phase 10**;
+      borrow cost and shorting restrictions are still their own problem, and still unmodelled
 - [x] Worker pool draining `backtest_runs WHERE status = 'queued'` with `FOR UPDATE SKIP LOCKED`.
       `SKIP LOCKED` is what makes `docker compose up --scale app=3` safe without a queue broker
 - [x] Container CPU/memory limits in compose, and a worker count derived from `GOMAXPROCS` — which
@@ -2260,17 +2260,151 @@ Phase 8 wrote down and this phase is the first to actually need.
 
 ## Phase 10 — Metrics and reports
 
-- [ ] Returns: total, CAGR, annualized vol
-- [ ] Risk: max drawdown (value + duration), Sharpe, Sortino, Calmar
-- [ ] Trades: count, win rate, profit factor, expectancy, avg win/avg loss, largest win/loss,
+- [x] Returns: total, CAGR, annualized vol
+- [x] Risk: max drawdown (value + duration), Sharpe, Sortino, Calmar
+- [x] Trades: count, win rate, profit factor, expectancy, avg win/avg loss, largest win/loss,
       max consecutive losses, avg holding period, time in market
-- [ ] Benchmark comparison against buy-and-hold of the same symbol, and against IBOV
-- [ ] `GET /api/v1/backtests/{id}/trades` and `/equity`
-- [ ] Frontend: equity curve, underwater/drawdown plot, trade table, and **entry/exit markers drawn
+- [x] Benchmark comparison against buy-and-hold of the same symbol, and against IBOV
+- [x] `GET /api/v1/backtests/{id}/trades` and `/equity`
+- [x] Frontend: equity curve, underwater/drawdown plot, trade table, and **entry/exit markers drawn
       on the price chart** — seeing the trades on the candles is where strategy bugs become obvious
-- [ ] Risk-free rate for Sharpe comes from the CDI/Selic, not from 0
+- [x] Risk-free rate for Sharpe comes from the CDI/Selic, not from 0
+
+*(`00013_backtest_reports.sql` adds `backtest_trades.dividends_cents` and the nullable
+`backtest_equity.hold_cents` / `index_cents`, so one row per bar now carries all three curves.
+`GET /api/v1/backtests` landed alongside the two the plan asked for, because a list endpoint is
+what turns a run id into something the UI can find again.)*
 
 **Done when:** a run produces a report you'd actually trust to reject a strategy.
+
+### Decisions this phase forced
+
+**Dividends are credited as cash, which is what settled Phase 9's open question about what a
+return means.** The engine still trades raw OHLC — fills print at prices that existed — but a
+sixth step now runs at the top of the bar loop, before the fill: if a position is open and the bar
+is an ex-date, `qty x dividend` lands in cash. The dividend itself is derived rather than stored,
+from the only adjustment data brapi gives us: with `r = adj_close / close`, the cash that went ex
+at bar *i* is `close(i-1) x (1 - r(i-1)/r(i))`. Measuring the four tokenless tickers first is what
+made this safe to do — `close` comes back **already split-adjusted** (MGLU3 sits at R$31 in April
+2023, post-grouping), so the ratio moves on dividends alone and the derivation is not quietly
+fighting a second corporate action. The scale of what was being dropped justifies the work:
+PETR4's cumulative factor runs 0.2983 to 1.0 over five years.
+
+**Crediting before the fill is the whole correctness argument, and it is the same trick as Phase
+9's ordering.** The dividend belongs to whoever held at the *previous* close. Running `credit`
+first means an entry filling at this bar's open misses it — right, since buying on the ex-date
+buys the stock without the dividend — while a position exiting later on this same bar still
+collects it, because at credit time it is still open. Both cases fall out of the sequence rather
+than out of a date comparison anyone has to keep straight.
+
+**A run says which basis it is on, because the basis is not a property of the app.** `adj_close`
+is populated on 99.9% of daily bars and on **none** of the 5m ones, so a 5m run is a price return
+no matter what the daily run beside it is. `metrics.basis` is `total_return` or `price_return`,
+`unadjusted_bars` counts the stretches inside a total-return run that had nothing to work with,
+and the report says so in words rather than leaving the reader to assume. Two numbers on different
+bases are not a comparison, and the one place that matters most is the benchmark.
+
+**A jump too big to be a dividend is counted, not credited.** The largest genuine implied yield in
+the committed data is PETR4 at 18.37%; a 2:1 split would read as 50%. `maxImpliedYield` sits at
+30% between them, and a bar past it lands in `unpriced_actions` instead of paying out. Crediting
+it would invent cash no shareholder received; silently applying it as a price move would be worse.
+Adjusting the *share count* through a split is the real fix and it is Phase 11's, since it changes
+what a trade row is. The counter is what tells you whether that work would pay.
+
+**Profit factor is null, not infinity, and that is a bug the type system did not catch.** Gross
+win over gross loss is undefined for a run that never lost, and the obvious `math.Inf(1)` makes
+`json.Marshal` **fail** — which would have errored the whole run at the write, for the strategies
+that did best. A zero would have been worse than the crash, since it reads as the opposite of what
+happened. So the field is `*float64`, the JSON is `null`, and the report prints "no losing trade".
+A test now marshals the metrics and asserts the null, because the failure mode is invisible until
+a run happens to have no losing trade.
+
+**The benchmark buys at the second bar's open, not the first.** A buy-and-hold decision is made
+before the run starts, so bar zero's open is arguably available to it — but the engine structurally
+cannot fill before bar one, and handing the benchmark a bar no strategy can have would tax every
+strategy by an amount that has nothing to do with the strategy. It carries the same costs, the same
+lot floor and the same dividends as the engine, so the difference between the two curves is the
+strategy and nothing else. The `TestBuyAndHoldBenchmarkMatchesAHeldPosition` case pins this: an
+always-long spec has to score exactly zero excess.
+
+**IBOV is absent, and absent is a value.** `^BVSP` still answers `401` without a Pro token, so the
+index benchmark reports `unavailable` with the reason rather than a flat 0% that reads as a real
+comparison. It is also the one benchmark that needs no dividend handling — Ibovespa is already a
+total-return index, so a total-return strategy meets it on its own basis. When Phase 12 buys the
+token, the series appears and nothing in the code changes.
+
+**The risk-free rate is a committed dated series, and it admits where it ends.** `data/rates/selic.json`
+holds Copom's decisions as dated steps, loaded and validated exactly like `b3_holidays.json` and
+`contracts.json`. The rate is converted on the Brazilian convention the file declares —
+`basis: 252` — so the daily rate compounds back to the annual figure over 252 business days, and an
+intraday bar takes its share of a day rather than of a calendar year. What matters more than the
+arithmetic is the `through` field: a run reaching past it sets `risk_free_stale`, and the report
+says Sharpe is carrying the last known rate forward. A flat rate over 2021-2025 would have been
+wrong by twelve points of Selic without ever saying so.
+
+**Annualization reads the trading calendar rather than a constant.** `BarsPerYear` is 252 for daily
+and `252 x floor(session / bucket)` for everything else, so the 7-hour B3 session yields 84 five-
+minute bars a day and the same Sharpe formula works at every timeframe. Hard-coding a bars-per-year
+per timeframe would have been four constants that drift the first time the session hours change.
+
+**The equity curve is downsampled in Postgres, on a stride that always keeps both ends.**
+`ListBacktestEquity` numbers the rows in a window and keeps `n % stride = 1 OR n = total`, so a
+19,000-point 5m run comes back as ~2,000 for the chart while the first and last points — the two
+that define the return — survive by construction. The response says `sampled` and reports the true
+`total`, so a thinned curve never passes as the whole thing.
+
+**Both benchmark curves live on the equity table, not in the metrics blob.** Three aligned numbers
+per bar in `backtest_equity` beats several thousand points inside a JSONB column: one query feeds
+the chart, the columns are nullable so a run without an index benchmark simply has nulls, and the
+`/equity` endpoint omits a curve entirely rather than shipping a ragged one.
+
+> **Status: written, not yet verified against the store.** The migration has not been applied and
+> the checks have not been run — both are yours. `sqlc` regenerated cleanly and the guess about the
+> cast parameter held: `$2::bigint` in the downsampler became `Column2`, the same shape
+> `SearchSymbols` already had.
+>
+> Carried into later phases, deliberately:
+> - **The Selic series needs checking against BCB, and it stops at 2025-12-31.** The steps through
+>   June 2025 are the ones worth trusting least at the tail; 2026 is absent entirely, so any run
+>   into this year sets `risk_free_stale`. Source of record is SGS series 432.
+> - **Splits still do not adjust the share count.** They are detected and counted, not handled.
+> - **`skipped_entries` still does not say why.** Phase 9 flagged this as Phase 10's to split once
+>   the report had somewhere to show it; the report now shows the count and the three possible
+>   causes in one sentence, which is honest but is not the split.
+> - **Trade markers are drawn against the loaded page.** A fill outside the visible range has no
+>   marker rather than snapping to the nearest bar, and switching symbols clears them, since
+>   markers from one ticker on another ticker's candles would be worse than none.
+
+### Three fixes after the phase closed
+
+**A rule can name any line an indicator emits, so one declaration reaches all of them.** An input
+still declares its own `output`, but a rule may now write `cloud.kijun` for any other line of the
+same input. The slot is attached on first use, which keeps the cost honest in both directions:
+Ichimoku is computed once no matter how many of its five lines are read, and a line nothing reads
+costs no slot at all. Naming the input's declared output — `cloud.tenkan`, since tenkan is
+ichimoku's first — resolves to the slot the input already had rather than a second copy, and the
+canonical spec drops a line name from a single-output indicator because `fast.ema` and `fast` are
+the same series. Without this, reaching five Ichimoku lines meant five inputs out of a budget of
+twelve, which is the definition of unusable.
+
+**Short selling is modelled, and the Plan grew a leg for each direction.** `Plan.Entry/Exit/Stop/
+Target` became `Plan.Long` and `Plan.Short`, each a `Leg` carrying its own entry, exit and
+brackets — because a stop that sits below the entry for a long sits above it for a short, and
+sharing one `Bracket` would silently hand one side the other's risk. The engine reads direction off
+the position rather than assuming: a short sells to open and buys to cover, its equity is cash less
+what the buy-back costs, and it **pays** the dividend a long would have collected, since the lender
+of the shares is still entitled to it. The test that matters is the mirror: long PnL and short PnL
+over the same bars sum to exactly zero.
+
+**Long wins a bar where both sides fire.** A spec whose two entries fire on the same close has to
+resolve to one position, and a fixed order is the only resolution that stays deterministic across
+runs. The bracket budget also moved from per-spec to per-side — one stop each is two positions'
+worth, not two brackets on one — and `risk_pct` sizing now names the side whose exit is missing its
+stop rather than passing validation and skipping every short entry at runtime.
+
+**Borrow cost is the honest gap.** The engine shorts anything, in any size, for free. Real shorting
+costs a borrow fee and is sometimes simply unavailable, so a short strategy's numbers here are its
+best case. That is Phase 11's, listed there now.
 
 ---
 
@@ -2282,6 +2416,10 @@ Phase 8 wrote down and this phase is the first to actually need.
 - [ ] Futures: contract rollover and back-adjusted continuous series (WIN/WDO change contract
       every couple of months; a naive concatenation puts a fake gap at every roll)
 - [ ] Strategy sharing / public read-only links
+- [ ] Borrow cost on short positions, and the hard-to-borrow list that says which shorts were
+      actually available (the engine shorts anything, for free, which flatters every short strategy)
+- [ ] Corporate actions that are not dividends: a split adjusts the share count, rather than being
+      counted in `unpriced_actions` and skipped
 
 ---
 

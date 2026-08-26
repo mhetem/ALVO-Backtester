@@ -65,13 +65,13 @@ func TestValidatingASpecReturnsWhatARunWouldNeed(t *testing.T) {
 	if len(body.Plan.Indicators) != 3 {
 		t.Errorf("indicators = %v, want the two emas and the stop's atr", body.Plan.Indicators)
 	}
-	if !body.Plan.StopLoss {
+	if !body.Plan.Long.StopLoss {
 		t.Error("the plan lost the stop the spec attached")
 	}
-	if body.Plan.TakeProfit {
+	if body.Plan.Long.TakeProfit {
 		t.Error("the plan invented a target the spec never asked for")
 	}
-	if !body.Plan.RuleExit {
+	if !body.Plan.Long.RuleExit {
 		t.Error("the plan lost the crossing the exit was written with")
 	}
 	if body.Plan.Warmup < 21 {

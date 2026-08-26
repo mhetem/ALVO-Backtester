@@ -32,6 +32,8 @@ func (r iteratorForCreateBacktestEquity) Values() ([]interface{}, error) {
 		r.rows[0].RunID,
 		r.rows[0].Ts,
 		r.rows[0].EquityCents,
+		r.rows[0].HoldCents,
+		r.rows[0].IndexCents,
 	}, nil
 }
 
@@ -40,7 +42,7 @@ func (r iteratorForCreateBacktestEquity) Err() error {
 }
 
 func (q *Queries) CreateBacktestEquity(ctx context.Context, arg []CreateBacktestEquityParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"backtest_equity"}, []string{"run_id", "ts", "equity_cents"}, &iteratorForCreateBacktestEquity{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"backtest_equity"}, []string{"run_id", "ts", "equity_cents", "hold_cents", "index_cents"}, &iteratorForCreateBacktestEquity{rows: arg})
 }
 
 // iteratorForCreateBacktestTrades implements pgx.CopyFromSource.
@@ -73,6 +75,7 @@ func (r iteratorForCreateBacktestTrades) Values() ([]interface{}, error) {
 		r.rows[0].ExitPrice,
 		r.rows[0].PnlCents,
 		r.rows[0].FeesCents,
+		r.rows[0].DividendsCents,
 		r.rows[0].ExitReason,
 	}, nil
 }
@@ -82,5 +85,5 @@ func (r iteratorForCreateBacktestTrades) Err() error {
 }
 
 func (q *Queries) CreateBacktestTrades(ctx context.Context, arg []CreateBacktestTradesParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"backtest_trades"}, []string{"run_id", "seq", "side", "qty", "entry_ts", "entry_price", "exit_ts", "exit_price", "pnl_cents", "fees_cents", "exit_reason"}, &iteratorForCreateBacktestTrades{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"backtest_trades"}, []string{"run_id", "seq", "side", "qty", "entry_ts", "entry_price", "exit_ts", "exit_price", "pnl_cents", "fees_cents", "dividends_cents", "exit_reason"}, &iteratorForCreateBacktestTrades{rows: arg})
 }

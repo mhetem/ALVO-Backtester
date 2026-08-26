@@ -1,6 +1,6 @@
 import { HttpError, errorMessage } from './api';
 import { authorized, decode } from './session';
-import type { CatalogEntry } from './catalog';
+import { findEntry, type Catalog, type CatalogEntry } from './catalog';
 
 export const SPEC_VERSION = 1;
 
@@ -89,12 +89,24 @@ export type InputDraft = {
   output: string;
 };
 
+export type SideDraft = {
+  entry: RuleDraft | null;
+  exit: RuleDraft | null;
+};
+
 export type SpecDraft = {
   inputs: InputDraft[];
-  entry: RuleDraft;
-  exit: RuleDraft | null;
+  long: SideDraft;
+  short: SideDraft;
   sizing: { type: SizingType; value: number };
   costs: { brokerage_cents: number; fee_bps: number; slippage_bps: number };
+};
+
+export type LegSummary = {
+  trades: boolean;
+  rule_exit: boolean;
+  stop_loss: boolean;
+  take_profit: boolean;
 };
 
 export type PlanSummary = {
@@ -104,9 +116,8 @@ export type PlanSummary = {
   warmup: number;
   prime_bars: number;
   depth: number;
-  rule_exit: boolean;
-  stop_loss: boolean;
-  take_profit: boolean;
+  long: LegSummary;
+  short: LegSummary;
 };
 
 export type SavedStrategy = {
@@ -153,17 +164,20 @@ export function blankSpec(): SpecDraft {
       { name: 'fast', indicator: 'ema', params: { period: 9 }, source: 'close', output: '' },
       { name: 'slow', indicator: 'ema', params: { period: 21 }, source: 'close', output: '' },
     ],
-    entry: {
-      kind: 'compare',
-      op: 'crosses_above',
-      operands: [namedOperand('fast'), namedOperand('slow')],
+    long: {
+      entry: {
+        kind: 'compare',
+        op: 'crosses_above',
+        operands: [namedOperand('fast'), namedOperand('slow')],
+      },
+      exit: {
+        kind: 'compare',
+        op: 'crosses_below',
+        operands: [namedOperand('fast'), namedOperand('slow')],
+      },
     },
-    exit: {
-      kind: 'compare',
-      op: 'crosses_below',
-      operands: [namedOperand('fast'), namedOperand('slow')],
-    },
-    sizing: { type: 'pct_equity', value: 0.95 },
+    short: { entry: null, exit: null },
+    sizing: { type: 'fixed_qty', value: 100 },
     costs: { brokerage_cents: 0, fee_bps: 3.25, slippage_bps: 5 },
   };
 }
@@ -175,6 +189,30 @@ export function blankRule(names: string[]): CompareDraft {
 
 export function inputNames(spec: SpecDraft): string[] {
   return spec.inputs.map((input) => input.name).filter((name) => name !== '');
+}
+
+// What a rule may name. An indicator emitting several lines contributes one reference per
+// line, so Ichimoku is declared once and every line of it stays reachable; a single-line
+// indicator contributes only its bare name, which is the same series either way.
+export function inputRefs(spec: SpecDraft, catalog: Catalog | null): string[] {
+  const refs: string[] = [];
+
+  for (const input of spec.inputs) {
+    if (input.name === '') {
+      continue;
+    }
+
+    const entry = findEntry(catalog, input.indicator);
+    if (!entry || entry.outputs.length <= 1) {
+      refs.push(input.name);
+      continue;
+    }
+    for (const output of entry.outputs) {
+      refs.push(`${input.name}.${output}`);
+    }
+  }
+
+  return refs;
 }
 
 export function nextInputName(spec: SpecDraft): string {
@@ -248,16 +286,32 @@ export function specToJSON(spec: SpecDraft): Record<string, unknown> {
     inputs[input.name] = body;
   }
 
+  const entry: Record<string, unknown> = {};
+  const exit: Record<string, unknown> = {};
+
+  for (const [key, side] of [
+    ['long', spec.long],
+    ['short', spec.short],
+  ] as const) {
+    if (!side.entry) {
+      continue;
+    }
+    entry[key] = ruleToJSON(side.entry);
+    if (side.exit) {
+      exit[key] = ruleToJSON(side.exit);
+    }
+  }
+
   const body: Record<string, unknown> = {
     version: SPEC_VERSION,
     inputs,
-    entry: { long: ruleToJSON(spec.entry) },
+    entry,
     sizing: { ...spec.sizing },
     costs: { ...spec.costs },
   };
 
-  if (spec.exit) {
-    body.exit = { long: ruleToJSON(spec.exit) };
+  if (Object.keys(exit).length > 0) {
+    body.exit = exit;
   }
 
   return body;
@@ -345,12 +399,15 @@ export function ruleFromJSON(value: unknown): RuleDraft {
   return { kind: 'compare', op: op as Comparator, operands };
 }
 
-function sideFromJSON(value: unknown): RuleDraft {
-  const body = bare(value);
-  if (body.long === undefined) {
-    throw new SpecError('a side needs a long rule', '');
+function sideFromJSON(value: unknown, key: 'long' | 'short'): RuleDraft | null {
+  if (value === undefined || value === null) {
+    return null;
   }
-  return ruleFromJSON(body.long);
+  const body = bare(value);
+  if (body[key] === undefined) {
+    return null;
+  }
+  return ruleFromJSON(body[key]);
 }
 
 export function specFromJSON(value: unknown): SpecDraft {
@@ -377,8 +434,12 @@ export function specFromJSON(value: unknown): SpecDraft {
     });
   }
 
-  spec.entry = sideFromJSON(body.entry);
-  spec.exit = body.exit === undefined || body.exit === null ? null : sideFromJSON(body.exit);
+  spec.long = { entry: sideFromJSON(body.entry, 'long'), exit: sideFromJSON(body.exit, 'long') };
+  spec.short = { entry: sideFromJSON(body.entry, 'short'), exit: sideFromJSON(body.exit, 'short') };
+
+  if (!spec.long.entry && !spec.short.entry) {
+    throw new SpecError('a strategy needs a long entry, a short entry, or both', '/entry');
+  }
 
   const sizing = bare(body.sizing);
   if ((SIZING_TYPES as readonly string[]).includes(String(sizing.type))) {

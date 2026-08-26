@@ -28,24 +28,49 @@ type Bracket struct {
 	Slot  int
 }
 
+// A Leg is one direction's whole contract: when to open it, when to close it, and the
+// bracket the entry hangs off. Long and short each carry their own, because a stop that
+// sits below the entry for one sits above it for the other.
+type Leg struct {
+	Entry  Rule
+	Exit   Rule
+	Stop   *Bracket
+	Target *Bracket
+}
+
+func (l Leg) Trades() bool { return l.Entry != nil }
+
 type Plan struct {
 	Spec      Spec
 	Units     []Unit
 	Slots     []Slot
 	Index     map[string]int
-	Entry     Rule
-	Exit      Rule
-	Stop      *Bracket
-	Target    *Bracket
+	Long      Leg
+	Short     Leg
 	Depth     int
 	Warmup    int
 	PrimeBars int
+}
+
+func (p *Plan) Leg(short bool) *Leg {
+	if short {
+		return &p.Short
+	}
+	return &p.Long
+}
+
+// held remembers what an input was built from, so a rule naming another of its lines can
+// attach that output to the same unit instead of rebuilding the indicator.
+type held struct {
+	instance indicator.Instance
+	feed     int
 }
 
 type builder struct {
 	plan  *Plan
 	units map[string]int
 	slots map[string]int
+	built map[string]held
 }
 
 func Compile(spec Spec) (*Plan, error) {
@@ -53,36 +78,65 @@ func Compile(spec Spec) (*Plan, error) {
 		plan:  &Plan{Spec: spec, Index: map[string]int{}},
 		units: map[string]int{},
 		slots: map[string]int{},
+		built: map[string]held{},
 	}
 
 	if err := b.inputs(); err != nil {
 		return nil, err
 	}
 
-	entry, err := b.rule(spec.Entry.Long)
-	if err != nil {
+	if err := b.leg(&b.plan.Long, spec.Entry.Long, exitOf(spec.Exit, false)); err != nil {
 		return nil, err
 	}
-	b.plan.Entry = entry
-
-	if spec.Exit != nil {
-		residual, err := b.hoist(spec.Exit.Long)
-		if err != nil {
-			return nil, err
-		}
-		if residual != nil {
-			exit, err := b.rule(residual)
-			if err != nil {
-				return nil, err
-			}
-			b.plan.Exit = exit
-		}
+	if err := b.leg(&b.plan.Short, spec.Entry.Short, exitOf(spec.Exit, true)); err != nil {
+		return nil, err
 	}
 
-	b.plan.Depth = max(depthOf(b.plan.Entry), depthOf(b.plan.Exit))
+	b.plan.Depth = max(
+		depthOf(b.plan.Long.Entry), depthOf(b.plan.Long.Exit),
+		depthOf(b.plan.Short.Entry), depthOf(b.plan.Short.Exit),
+	)
 	b.measure()
 
 	return b.plan, nil
+}
+
+func exitOf(side *Side, short bool) Node {
+	if side == nil {
+		return nil
+	}
+	if short {
+		return side.Short
+	}
+	return side.Long
+}
+
+func (b *builder) leg(leg *Leg, entry, exit Node) error {
+	if entry == nil {
+		return nil
+	}
+
+	built, err := b.rule(entry)
+	if err != nil {
+		return err
+	}
+	leg.Entry = built
+
+	if exit == nil {
+		return nil
+	}
+
+	residual, err := b.hoist(leg, exit)
+	if err != nil {
+		return err
+	}
+	if residual == nil {
+		return nil
+	}
+
+	leg.Exit, err = b.rule(residual)
+
+	return err
 }
 
 func (b *builder) inputs() error {
@@ -119,8 +173,8 @@ func (b *builder) inputs() error {
 			return fmt.Errorf("input %q: %w", name, err)
 		}
 
-		at := b.attach(instance, feed, outputOf(instance, input.Output), name)
-		b.plan.Index[name] = at
+		b.built[name] = held{instance: instance, feed: feed}
+		b.plan.Index[name] = b.attach(instance, feed, outputOf(instance, input.Output), name)
 	}
 
 	return nil
@@ -150,14 +204,14 @@ func (b *builder) attach(instance indicator.Instance, feed, output int, name str
 	return at
 }
 
-func (b *builder) hoist(node Node) (Node, error) {
+func (b *builder) hoist(leg *Leg, node Node) (Node, error) {
 	switch shape := node.(type) {
 	case StopLoss:
 		bracket, err := b.bracket(shape.Level)
 		if err != nil {
 			return nil, err
 		}
-		b.plan.Stop = bracket
+		leg.Stop = bracket
 		return nil, nil
 
 	case TakeProfit:
@@ -165,13 +219,13 @@ func (b *builder) hoist(node Node) (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		b.plan.Target = bracket
+		leg.Target = bracket
 		return nil, nil
 
 	case Any:
 		kept := make([]Node, 0, len(shape.Nodes))
 		for _, inner := range shape.Nodes {
-			residual, err := b.hoist(inner)
+			residual, err := b.hoist(leg, inner)
 			if err != nil {
 				return nil, err
 			}
@@ -263,9 +317,9 @@ func (b *builder) compare(node Compare) (Rule, error) {
 	for _, operand := range operands {
 		term := Term{Kind: operand.Kind, Field: operand.Field, Value: operand.Value, Back: operand.Back, Slot: -1}
 		if operand.Kind == OperandInput {
-			at, ok := b.plan.Index[operand.Input]
-			if !ok {
-				return nil, fmt.Errorf("operand %q has no slot", operand.Input)
+			at, err := b.line(operand)
+			if err != nil {
+				return nil, err
 			}
 			term.Slot = at
 		}
@@ -298,6 +352,29 @@ func (b *builder) measure() {
 
 	plan.Warmup += plan.Depth
 	plan.PrimeBars = min(plan.PrimeBars+plan.Depth, indicator.MaxPrimeBars)
+}
+
+// line resolves an operand to the slot it reads. A bare input name keeps the slot the
+// input already declared; a named line attaches that output to the unit on first use, so
+// only the lines a rule actually reads cost a slot.
+func (b *builder) line(operand Operand) (int, error) {
+	if operand.Output == "" {
+		at, ok := b.plan.Index[operand.Input]
+		if !ok {
+			return -1, fmt.Errorf("operand %q has no slot", operand.Input)
+		}
+		return at, nil
+	}
+
+	from, ok := b.built[operand.Input]
+	if !ok {
+		return -1, fmt.Errorf("operand %q names no input", operand.Ref())
+	}
+	if !slices.Contains(from.instance.Spec.Outputs, operand.Output) {
+		return -1, fmt.Errorf("%s has no output %q", from.instance.Spec.Name, operand.Output)
+	}
+
+	return b.attach(from.instance, from.feed, outputOf(from.instance, operand.Output), operand.Ref()), nil
 }
 
 func outputOf(instance indicator.Instance, name string) int {

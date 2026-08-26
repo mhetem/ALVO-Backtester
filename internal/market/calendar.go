@@ -155,6 +155,10 @@ func (c *Calendar) Date(year int, month time.Month, day int) time.Time {
 
 func (c *Calendar) Years() (int, int) { return c.minYear, c.maxYear }
 
+func (c *Calendar) RegularSession() time.Duration {
+	return time.Duration(c.closeMin-c.openMin) * time.Minute
+}
+
 func (c *Calendar) Holidays() int { return len(c.days) }
 
 func (c *Calendar) Covers(day time.Time) bool {

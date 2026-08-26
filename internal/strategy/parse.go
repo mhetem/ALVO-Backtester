@@ -26,6 +26,7 @@ type parser struct {
 	nodes   int
 	stops   int
 	targets int
+	stopped map[string]bool
 }
 
 type rawInput struct {
@@ -65,19 +66,27 @@ func (p *parser) spec(v any) (Spec, error) {
 	if !ok {
 		return Spec{}, at.child("entry").faultf("a strategy needs an entry rule")
 	}
-	entryNode, err := p.side(entry, at.child("entry"), false, "entry")
+	entrySide, err := p.side(entry, at.child("entry"), false, "entry")
 	if err != nil {
 		return Spec{}, err
 	}
 
-	spec := Spec{Version: Version, Inputs: p.inputs, Entry: Side{Long: entryNode}}
+	spec := Spec{Version: Version, Inputs: p.inputs, Entry: entrySide}
 
 	if raw, ok := body["exit"]; ok && raw != nil {
-		exitNode, err := p.side(raw, at.child("exit"), true, "exit")
+		exitSide, err := p.side(raw, at.child("exit"), true, "exit")
 		if err != nil {
 			return Spec{}, err
 		}
-		spec.Exit = &Side{Long: exitNode}
+		// An exit for a side that never opens is a rule nothing can ever evaluate, and
+		// silently dropping it would hide a spec that does not say what its author meant.
+		if exitSide.Long != nil && spec.Entry.Long == nil {
+			return Spec{}, at.child("exit").child(KeyLong).faultf("there is no %s entry for this %s exit", KeyLong, KeyLong)
+		}
+		if exitSide.Short != nil && spec.Entry.Short == nil {
+			return Spec{}, at.child("exit").child(KeyShort).faultf("there is no %s entry for this %s exit", KeyShort, KeyShort)
+		}
+		spec.Exit = &exitSide
 	}
 
 	sizing, ok := body["sizing"]
@@ -88,9 +97,16 @@ func (p *parser) spec(v any) (Spec, error) {
 	if err != nil {
 		return Spec{}, err
 	}
-	if spec.Sizing.Type == SizeRiskPct && p.stops == 0 {
-		return Spec{}, at.child("sizing").faultf(
-			"%s sizes a position off the distance to its stop, so the exit needs a %s", SizeRiskPct, KeyStopLoss)
+	// risk_pct sizes off the distance to the stop, so every side that can open a position
+	// needs one of its own. A short with no stop would size at zero and skip every entry.
+	if spec.Sizing.Type == SizeRiskPct {
+		for _, key := range []string{KeyLong, KeyShort} {
+			if spec.Entry.node(key) != nil && !p.stopped[key] {
+				return Spec{}, at.child("sizing").faultf(
+					"%s sizes a position off the distance to its stop, so the %s exit needs a %s",
+					SizeRiskPct, key, KeyStopLoss)
+			}
+		}
 	}
 
 	spec.Costs, err = readCosts(body["costs"], at.child("costs"))
@@ -301,21 +317,55 @@ func paramFault(spec indicator.Spec, params map[string]float64, at path) *Fault 
 	return nil
 }
 
-func (p *parser) side(v any, at path, brackets bool, what string) (Node, error) {
+func (p *parser) side(v any, at path, brackets bool, what string) (Side, error) {
 	body, err := object(v, at, what)
+	if err != nil {
+		return Side{}, err
+	}
+	if err := onlyFields(body, at, KeyLong, KeyShort); err != nil {
+		return Side{}, err
+	}
+
+	var side Side
+
+	if raw, ok := body[KeyLong]; ok {
+		side.Long, err = p.leg(raw, at.child(KeyLong), brackets, KeyLong)
+		if err != nil {
+			return Side{}, err
+		}
+	}
+	if raw, ok := body[KeyShort]; ok {
+		side.Short, err = p.leg(raw, at.child(KeyShort), brackets, KeyShort)
+		if err != nil {
+			return Side{}, err
+		}
+	}
+
+	if side.Long == nil && side.Short == nil {
+		return Side{}, at.faultf("%s needs a %s rule, a %s rule, or both", what, KeyLong, KeyShort)
+	}
+
+	return side, nil
+}
+
+// Each side carries its own stop and target, so the one-of-each guard counts per side
+// rather than per spec: a long stop and a short stop are two positions' worth, not two
+// brackets on one position.
+func (p *parser) leg(v any, at path, brackets bool, key string) (Node, error) {
+	p.stops, p.targets = 0, 0
+
+	node, err := p.node(v, at, 1, brackets)
 	if err != nil {
 		return nil, err
 	}
-	if err := onlyFields(body, at, KeyLong); err != nil {
-		return nil, err
+	if p.stops > 0 {
+		if p.stopped == nil {
+			p.stopped = map[string]bool{}
+		}
+		p.stopped[key] = true
 	}
 
-	long, ok := body[KeyLong]
-	if !ok {
-		return nil, at.child(KeyLong).faultf("%s needs a long rule — short selling is not modelled yet", what)
-	}
-
-	return p.node(long, at.child(KeyLong), 1, brackets)
+	return node, nil
 }
 
 func (p *parser) node(v any, at path, depth int, brackets bool) (Node, error) {
@@ -513,6 +563,9 @@ func (p *parser) ref(body map[string]any, at path) (Operand, error) {
 func (p *parser) named(name string, back int, at path) (Operand, error) {
 	trimmed := clean(name)
 
+	if held, line, dotted := strings.Cut(trimmed, LineSep); dotted {
+		return p.line(held, line, back, at)
+	}
 	if _, ok := p.inputs[trimmed]; ok {
 		return Operand{Kind: OperandInput, Input: trimmed, Back: back}, nil
 	}
@@ -522,6 +575,33 @@ func (p *parser) named(name string, back int, at path) (Operand, error) {
 
 	return Operand{}, at.faultf("%q names neither an input (%s) nor a price field (%s)",
 		name, strings.Join(p.names, ", "), JoinFields())
+}
+
+// line reads one output of an input that emits several. Declaring the indicator once and
+// naming its lines beats declaring it once per line: Ichimoku alone would otherwise spend
+// five of the twelve inputs a spec is allowed.
+func (p *parser) line(held, line string, back int, at path) (Operand, error) {
+	input, ok := p.inputs[held]
+	if !ok {
+		return Operand{}, at.faultf("%q names no input (want one of: %s)", held, strings.Join(p.names, ", "))
+	}
+
+	spec, ok := indicator.Lookup(input.Indicator)
+	if !ok {
+		return Operand{}, at.faultf("input %q holds unknown indicator %q", held, input.Indicator)
+	}
+	if !slices.Contains(spec.Outputs, line) {
+		return Operand{}, at.faultf("%s has no output %q (want one of: %s)",
+			spec.Name, line, strings.Join(spec.Outputs, ", "))
+	}
+
+	// A single-output indicator has nothing to disambiguate, so the plain name is the
+	// canonical form and the dotted one collapses onto it.
+	if len(spec.Outputs) == 1 {
+		return Operand{Kind: OperandInput, Input: held, Back: back}, nil
+	}
+
+	return Operand{Kind: OperandInput, Input: held, Output: line, Back: back}, nil
 }
 
 func readLevel(v any, at path, what string) (Level, error) {
