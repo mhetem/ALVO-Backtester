@@ -151,6 +151,11 @@
       pointer = cause.pointer;
       return;
     }
+    if (cause instanceof HttpError && cause.status === 401) {
+      error = 'Your session ended. Sign in again to validate or save.';
+      pointer = '';
+      return;
+    }
     error = describe(cause);
     pointer = '';
   }
@@ -658,6 +663,8 @@
             {/if}
           {/each}
         </p>
+      {:else if !user}
+        <p class="says">Sign in to validate or save. The builder works either way.</p>
       {:else}
         <p class="says">Validate to compile this against the indicator library.</p>
       {/if}

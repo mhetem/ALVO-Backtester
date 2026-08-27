@@ -2893,8 +2893,10 @@ on a named volume, and the backup story below is what makes that safe.
 | **Oracle Cloud Always Free** (Ampere A1) | **R$0** | 2 OCPU / 12 GB ARM since the June 2026 cut — still 3× what this needs. Has **São Paulo and Vinhedo** regions, so latency from Brazil is single-digit ms. Catch: A1 capacity is frequently unavailable, and free accounts can be reclaimed |
 | **Hetzner CAX11** (ARM) | ~€5.99/mo | 2 vCPU / 4 GB / 40 GB. Boringly reliable, but EU-only — ~200 ms from Brazil |
 
-- [ ] Try Oracle first; it's free and it's in Brazil. Keep Hetzner as the fallback for when A1
-      capacity won't provision
+- [x] Try Oracle first; it's free and it's in Brazil. Keep Hetzner as the fallback for when A1
+      capacity won't provision. **Oracle it is, on the third attempt and at half the shape:
+      1 OCPU / 6 GB in Vinhedo.** The full allocation returned *out of host capacity*; the
+      smaller ask provisioned immediately
 - [x] **Both are ARM**, which makes the `linux/arm64` build load-bearing rather than a nicety
 - [x] Multi-arch image build (`linux/amd64`, `linux/arm64`) via buildx in CI, pushed to GHCR on tag
 - [x] `docker-compose.prod.yml`: adds **Caddy** as the only published service, reverse-proxying the
@@ -2917,12 +2919,13 @@ on a named volume, and the backup story below is what makes that safe.
 - [x] Metrics + `pprof` behind auth
 - [x] Backtest timeout + memory ceiling per run
 - [ ] Pin base images by digest once the build is stable
-- [ ] **Move the candle store to the box.** Not in the original list, and the one step that has no
+- [x] **Move the candle store to the box.** Not in the original list, and the one step that has no
       undo: the store is in this machine's `alvo_pgdata` volume. `pg_dump -Fc` out, `pg_restore`
       into an *empty* database on the box, and only then start the app. The app runs goose on
       startup, so an app that boots first migrates the schema and the restore then collides with
-      tables that already exist. Restored first, the dump carries `goose_db_version` at 18 and
-      goose correctly does nothing
+      tables that already exist. Restored first, the dump carries `goose_db_version` at the head
+      of `sql/schema` and goose correctly does nothing. **Done: a 9.8 MB dump restored to
+      version 20**
 - [ ] Prove a restore from object storage, not from the disk the dump was written on
 
 **Done when:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` on a fresh
@@ -2942,6 +2945,47 @@ stays current and a benchmark, not intraday depth.
 forbids the narrow tail refresh that would backfill a gap. The consequence it doesn't state is
 that any day the scheduler isn't running is a permanent hole in 5m — which is why
 `INGEST_ENABLED=true` is part of the cutover and not a follow-up.
+
+**The shape granted was half the shape planned, and Docker refuses a limit it cannot satisfy.**
+A1 capacity answered *out of host capacity* for the full free allocation and provisioned 1 OCPU /
+6 GB on the smaller ask. `cpus: "2.0"` against a single-core box is a hard error at container
+create, not a clamp to what exists, so the app never started and the failure arrived after a
+successful 92-second build. `GOMAXPROCS` had to come down with it for a separate reason: the Go
+runtime reads the host's CPU count rather than the cgroup's, so the backtest worker pool would
+have been sized to cores the container is not allowed to use. The limits now encode the shape that
+was granted rather than the one the table above predicted; resizing the instance means revisiting
+both numbers.
+
+**Oracle ships a populated host firewall, and the security list is only half the gate.** Every
+other cloud in the comparison hands over a bare box and filters at the network layer alone. OCI's
+Ubuntu image pre-seeds `/etc/iptables/rules.v4` with a terminal REJECT, so opening 80 and 443 in
+the VCN security list produces a port that is open at the network and closed on the host — a
+failure that looks like a broken application. `-I` matters over `-A` because a rule appended after
+the REJECT is never reached, and `netfilter-persistent save` has to run before Docker is installed,
+since its reload flushes the chains Docker inserts at startup.
+
+**An ephemeral public IP cannot be converted to a reserved one, which makes the DNS record the
+only external dependency worth protecting.** The console offers no in-place conversion: taking a
+reserved address means releasing the ephemeral one and being allocated a different number, so the
+operation that would protect the IP is the one that discards it. Terminating the instance releases
+it too. Everything else survives — the VCN, the subnet, the internet gateway, the security list —
+which is what made rebuilding the box over a wrong image a ten-minute detour rather than a redo.
+
+**"Propagated" at the registrar and "resolvable from the box" are different questions.** GoDaddy
+reports propagation once its own authoritative servers carry the new value, which says nothing
+about caches downstream, and the record being replaced had a one-hour TTL. `resolvectl
+flush-caches` does not help, because an OCI instance resolves through the VCN resolver at
+`169.254.169.254`, whose cache sits upstream of systemd-resolved. The check that answers the real
+question is `dig @ns65.domaincontrol.com`, straight to authoritative. Let's Encrypt resolves
+independently of all of it, which is why the certificate was issued while the box itself was still
+six minutes from agreeing.
+
+**Caddy's `header_up X-Forwarded-For` warning is redundancy, not a defect.** Caddy reports the
+directive as unnecessary because its default already forwards the header, appending the real client
+address to whatever the caller sent. `clientIP` reads `hops[len(hops)-1]`, so the spoofed values a
+caller can prepend are never the ones read — the last hop is Caddy's own observation either way.
+The overwrite reaches the same guarantee by a shorter route and is worth keeping: it holds the
+property even if the parse ever moves to the first hop.
 
 **Docker's stop grace was shorter than the shutdown path.** `shutdownTimeout` is 15s and Docker's
 default is 10s, so SIGKILL landed five seconds into the drain, inside `runner.Wait()` — producing
