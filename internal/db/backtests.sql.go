@@ -110,6 +110,17 @@ func (q *Queries) CountBacktestRunsByStatus(ctx context.Context) ([]CountBacktes
 	return items, nil
 }
 
+const countBacktestSymbolEquity = `-- name: CountBacktestSymbolEquity :one
+SELECT COUNT(*) FROM backtest_symbol_equity WHERE run_id = $1
+`
+
+func (q *Queries) CountBacktestSymbolEquity(ctx context.Context, runID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countBacktestSymbolEquity, runID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 type CreateBacktestEquityParams struct {
 	RunID       uuid.UUID `json:"run_id"`
 	Ts          time.Time `json:"ts"`
@@ -196,6 +207,13 @@ type CreateBacktestRunSymbolsParams struct {
 	RunID    uuid.UUID `json:"run_id"`
 	Ord      int32     `json:"ord"`
 	SymbolID int64     `json:"symbol_id"`
+}
+
+type CreateBacktestSymbolEquityParams struct {
+	RunID       uuid.UUID `json:"run_id"`
+	SymbolID    int64     `json:"symbol_id"`
+	Ts          time.Time `json:"ts"`
+	EquityCents int64     `json:"equity_cents"`
 }
 
 type CreateBacktestTradesParams struct {
@@ -521,6 +539,51 @@ func (q *Queries) ListBacktestRuns(ctx context.Context, arg ListBacktestRunsPara
 			&i.Phase,
 			&i.Ticker,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBacktestSymbolEquity = `-- name: ListBacktestSymbolEquity :many
+SELECT ticker, ts, equity_cents
+FROM (
+    SELECT s.ticker, se.ts, se.equity_cents,
+           ROW_NUMBER() OVER (PARTITION BY se.symbol_id ORDER BY se.ts) AS n,
+           COUNT(*) OVER (PARTITION BY se.symbol_id) AS total
+    FROM backtest_symbol_equity se
+    JOIN symbols s ON s.id = se.symbol_id
+    WHERE se.run_id = $1
+) points
+WHERE (n - 1) % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 0 OR n = total
+ORDER BY ticker, ts
+`
+
+type ListBacktestSymbolEquityParams struct {
+	RunID   uuid.UUID `json:"run_id"`
+	Column2 int64     `json:"column_2"`
+}
+
+type ListBacktestSymbolEquityRow struct {
+	Ticker      string    `json:"ticker"`
+	Ts          time.Time `json:"ts"`
+	EquityCents int64     `json:"equity_cents"`
+}
+
+func (q *Queries) ListBacktestSymbolEquity(ctx context.Context, arg ListBacktestSymbolEquityParams) ([]ListBacktestSymbolEquityRow, error) {
+	rows, err := q.db.Query(ctx, listBacktestSymbolEquity, arg.RunID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBacktestSymbolEquityRow{}
+	for rows.Next() {
+		var i ListBacktestSymbolEquityRow
+		if err := rows.Scan(&i.Ticker, &i.Ts, &i.EquityCents); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

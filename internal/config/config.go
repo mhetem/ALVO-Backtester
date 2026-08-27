@@ -12,7 +12,7 @@ const (
 	PlatformDev  = "dev"
 	PlatformProd = "prod"
 
-	DefaultIngestDelay = 30 * time.Minute
+	DefaultIngestFillAt = 20 * time.Hour
 )
 
 type Config struct {
@@ -25,7 +25,7 @@ type Config struct {
 	IngestEnabled  bool
 	IngestIntraday bool
 	IngestFutures  bool
-	IngestDelay    time.Duration
+	IngestFillAt   time.Duration
 }
 
 func (c Config) IsDev() bool { return c.Platform == PlatformDev }
@@ -56,11 +56,8 @@ func Load() (Config, error) {
 	if cfg.IngestFutures, err = envBool("INGEST_FUTURES", true); err != nil {
 		return Config{}, err
 	}
-	if cfg.IngestDelay, err = envDuration("INGEST_CLOSE_DELAY", DefaultIngestDelay); err != nil {
+	if cfg.IngestFillAt, err = envClock("INGEST_FILL_AT", DefaultIngestFillAt); err != nil {
 		return Config{}, err
-	}
-	if cfg.IngestDelay < 0 {
-		return Config{}, fmt.Errorf("INGEST_CLOSE_DELAY must not be negative, got %s", cfg.IngestDelay)
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -101,14 +98,16 @@ func envBool(key string, fallback bool) (bool, error) {
 	return value, nil
 }
 
-func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+// A time of day rather than an offset from the close: the candle fill waits for brapi to
+// finish revising the session, which has nothing to do with when the bell rang.
+func envClock(key string, fallback time.Duration) (time.Duration, error) {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return fallback, nil
 	}
-	value, err := time.ParseDuration(raw)
+	value, err := time.Parse("15:04", raw)
 	if err != nil {
-		return 0, fmt.Errorf("%s must be a duration such as 30m, got %q", key, raw)
+		return 0, fmt.Errorf("%s must be a HH:MM time of day such as 20:00, got %q", key, raw)
 	}
-	return value, nil
+	return time.Duration(value.Hour())*time.Hour + time.Duration(value.Minute())*time.Minute, nil
 }

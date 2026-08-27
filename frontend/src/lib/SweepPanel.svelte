@@ -1,7 +1,17 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
 
+  import BasketBar from './BasketBar.svelte';
   import { describe, HttpError, TIMEFRAMES, type Timeframe } from './api';
+  import {
+    createBasket,
+    fetchBaskets,
+    parseField,
+    replaceBasket,
+    toField,
+    updateBasket,
+    type SavedBasket,
+  } from './baskets';
   import { formatCents, formatPct, formatRatio, formatSignedPct } from './format';
   import {
     fetchStrategies,
@@ -50,6 +60,10 @@
   type Cell = { row: number; col: number; run: SweepRun | null };
 
   let strategies = $state<SavedStrategy[]>([]);
+  let baskets = $state<SavedBasket[]>([]);
+  let activeBasketId = $state<string | null>(null);
+  let basketError = $state<string | null>(null);
+  let basketBusy = $state(false);
   let sweeps = $state<Sweep[]>([]);
   let active = $state<Sweep | null>(null);
   let picked = $state<SweepRun | null>(null);
@@ -60,7 +74,6 @@
   let start = $state(defaultStart());
   let end = $state(today());
   let capital = $state(100000);
-  let maxPositions = $state(1);
   let kind = $state<SweepKind>('grid');
   let objective = $state<Objective>('sharpe');
   let inSampleDays = $state(180);
@@ -74,12 +87,7 @@
   const chosen = $derived(strategies.find((saved) => saved.id === strategyId) ?? null);
   const draft = $derived(specOf(chosen));
   const paths = $derived(draft ? sweepablePaths(draft) : []);
-  const basket = $derived(
-    sweepSymbols
-      .split(',')
-      .map((ticker) => ticker.trim().toUpperCase())
-      .filter((ticker) => ticker !== ''),
-  );
+  const basket = $derived(parseField(sweepSymbols));
   const points = $derived(axes.length === 0 ? 0 : gridSize(axes));
   const folds = $derived(kind === 'walk_forward' ? foldCount() : 0);
   const total = $derived(kind === 'walk_forward' ? points * folds : points);
@@ -176,6 +184,51 @@
     }
   }
 
+  async function loadBaskets() {
+    if (!user) {
+      baskets = [];
+      return;
+    }
+    try {
+      baskets = await fetchBaskets();
+      basketError = null;
+    } catch (cause) {
+      baskets = [];
+      basketError = describe(cause);
+    }
+  }
+
+  function selectBasket(id: string | null) {
+    basketError = null;
+    activeBasketId = id;
+
+    const chosen = baskets.find((saved) => saved.id === id);
+    if (chosen) {
+      sweepSymbols = toField(chosen);
+    }
+  }
+
+  async function saveBasket(name: string, id: string | null) {
+    if (basketBusy) {
+      return;
+    }
+
+    basketBusy = true;
+    basketError = null;
+
+    try {
+      const saved = id
+        ? await updateBasket(id, name, basket)
+        : await createBasket(name, basket);
+      baskets = replaceBasket(baskets, saved);
+      activeBasketId = saved.id;
+    } catch (cause) {
+      basketError = describe(cause);
+    } finally {
+      basketBusy = false;
+    }
+  }
+
   async function loadSweeps() {
     if (!user) {
       sweeps = [];
@@ -244,7 +297,6 @@
         start,
         end,
         capital_cents: Math.round(capital * 100),
-        max_positions: Math.min(maxPositions, basket.length),
         axes,
         ...(kind === 'walk_forward'
           ? { in_sample_days: inSampleDays, out_of_sample_days: outOfSampleDays }
@@ -391,6 +443,7 @@
 
   onMount(() => {
     void loadStrategies();
+    void loadBaskets();
     void loadSweeps();
   });
 
@@ -416,6 +469,16 @@
     {#if !user}
       <p class="hint">Sign in to sweep a strategy across a range of parameters.</p>
     {:else}
+      <BasketBar
+        {baskets}
+        activeId={activeBasketId}
+        tickers={basket}
+        busy={basketBusy}
+        error={basketError}
+        onSelect={selectBasket}
+        onSave={(name, id) => void saveBasket(name, id)}
+      />
+
       <form
         class="launch"
         onsubmit={(event) => {
@@ -464,12 +527,6 @@
             <input type="number" min="100" step="100" bind:value={capital} />
           </label>
 
-          {#if basket.length > 1}
-            <label class="short">
-              <span>Held at once</span>
-              <input type="number" min="1" max={basket.length} bind:value={maxPositions} />
-            </label>
-          {/if}
         </div>
 
         <div class="row">
@@ -729,8 +786,8 @@
 
             <p class="footnote">
               {active.symbols.join(', ')} · {active.timeframe} · {formatCents(active.capital_cents)}
-              {#if active.max_positions > 1}
-                · at most {active.max_positions} held at once{/if}
+              {#if active.symbols.length > 1}
+                · each on {formatCents(Math.round(active.capital_cents / active.symbols.length))}{/if}
               {#if active.progress.failed > 0}
                 · {formatPct((active.progress.failed / Math.max(active.progress.total, 1)) * 100, 0)}
                 of the runs failed{/if}

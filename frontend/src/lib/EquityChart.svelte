@@ -12,7 +12,7 @@
 
   import { formatCentsShort, formatPct, toChartTime } from './format';
   import { chartOptions, palette, seriesPalette } from './theme';
-  import type { Curve } from './backtest';
+  import type { Curve, SleeveCurve } from './backtest';
 
   type Props = {
     curve: Curve;
@@ -29,12 +29,25 @@
   let equityChart: IChartApi | null = null;
   let underwaterChart: IChartApi | null = null;
   let lines: ISeriesApi<SeriesType>[] = [];
+  let showSleeves = $state(false);
+
+  const sleeves = $derived(curve.symbols ?? []);
+
+  function sleeveColor(i: number): string {
+    const colors = seriesPalette();
+    return colors[(i + 4) % colors.length];
+  }
 
   const legend = $derived(
     [
       { name: 'Strategy', color: seriesPalette()[0], on: true },
       { name: `${symbol} buy & hold`, color: seriesPalette()[1], on: (curve.hold?.length ?? 0) > 0 },
       { name: index, color: seriesPalette()[3], on: (curve.index?.length ?? 0) > 0 },
+      ...sleeves.map((sleeve, i) => ({
+        name: sleeve.symbol,
+        color: sleeveColor(i),
+        on: showSleeves,
+      })),
     ].filter((row) => row.on),
   );
 
@@ -45,6 +58,21 @@
     return values.map((value, i) => ({
       time: toChartTime(curve.ts[i]) as UTCTimestamp,
       value: value / 100,
+    }));
+  }
+
+  // A sleeve holds a fraction of the capital, so plotted in cents it would sit in a band of
+  // its own and flatten the aggregate. Rebasing every sleeve to the run's opening value puts
+  // them all on one axis, where the question is which stock bent the curve and when.
+  function sleevePoints(sleeve: SleeveCurve) {
+    const base = sleeve.equity[0];
+    const start = curve.equity[0];
+    if (!base || !start || sleeve.equity.length !== curve.ts.length) {
+      return [];
+    }
+    return sleeve.equity.map((value, i) => ({
+      time: toChartTime(curve.ts[i]) as UTCTimestamp,
+      value: ((value / base) * start) / 100,
     }));
   }
 
@@ -98,6 +126,23 @@
       lines.push(series);
     }
 
+    if (showSleeves) {
+      for (const [i, sleeve] of sleeves.entries()) {
+        const data = sleevePoints(sleeve);
+        if (data.length === 0) {
+          continue;
+        }
+        const series = equityChart.addSeries(LineSeries, {
+          ...money,
+          color: sleeveColor(i),
+          lineWidth: 1,
+          lastValueVisible: false,
+        });
+        series.setData(data);
+        lines.push(series);
+      }
+    }
+
     underwaterChart = createChart(underwaterBox, {
       ...chartOptions(tone, intraday),
       rightPriceScale: { borderColor: tone.border, scaleMargins: { top: 0.05, bottom: 0.05 } },
@@ -137,6 +182,7 @@
   $effect(() => {
     void curve;
     void intraday;
+    void showSleeves;
     build();
   });
 
@@ -148,10 +194,19 @@
     {#each legend as row (row.name)}
       <span><i style:background={row.color}></i>{row.name}</span>
     {/each}
+    {#if sleeves.length > 0}
+      <button type="button" class="toggle" class:on={showSleeves} onclick={() => (showSleeves = !showSleeves)}>
+        {showSleeves ? 'Hide' : 'Show'} each stock
+      </button>
+    {/if}
     {#if curve.sampled}
       <span class="note">{curve.count} of {curve.total} points shown</span>
     {/if}
   </div>
+
+  {#if showSleeves}
+    <p class="rebased">Each stock is rebased to the run's opening value, so the lines compare shape rather than size.</p>
+  {/if}
 
   <div class="pane equity" bind:this={equityBox}></div>
 
@@ -189,6 +244,29 @@
   .legend .note {
     margin-left: auto;
     font-variant-numeric: tabular-nums;
+  }
+
+  .toggle {
+    font: inherit;
+    font-size: 0.7rem;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.1rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .toggle:hover,
+  .toggle.on {
+    color: var(--fg);
+    background: var(--hover);
+  }
+
+  .rebased {
+    margin: 0;
+    font-size: 0.7rem;
+    color: var(--muted);
   }
 
   .label {

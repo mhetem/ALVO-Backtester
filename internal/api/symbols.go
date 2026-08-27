@@ -113,15 +113,19 @@ func (s *Server) findSymbol(w http.ResponseWriter, r *http.Request, ticker strin
 }
 
 func displayName(row database.Symbol) string {
-	if row.LongName != nil {
-		if name := strings.TrimSpace(*row.LongName); name != "" {
+	return pickName(row.Ticker, row.ShortName, row.LongName)
+}
+
+func pickName(ticker string, short, long *string) string {
+	if long != nil {
+		if name := strings.TrimSpace(*long); name != "" {
 			return name
 		}
 	}
-	if row.ShortName != nil {
-		if name := strings.TrimSpace(*row.ShortName); name != "" && !strings.EqualFold(name, row.Ticker) {
+	if short != nil {
+		if name := strings.TrimSpace(*short); name != "" && !strings.EqualFold(name, ticker) {
 			return name
 		}
 	}
-	return row.Ticker
+	return ticker
 }

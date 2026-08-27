@@ -46,16 +46,24 @@ type tradesBody struct {
 }
 
 type equityBody struct {
-	RunID    uuid.UUID `json:"run_id"`
-	Symbol   string    `json:"symbol"`
-	Count    int       `json:"count"`
-	Total    int64     `json:"total"`
-	Sampled  bool      `json:"sampled"`
-	TS       []int64   `json:"ts"`
-	Equity   []int64   `json:"equity"`
-	Hold     []int64   `json:"hold,omitempty"`
-	Index    []int64   `json:"index,omitempty"`
-	Drawdown []float64 `json:"drawdown"`
+	RunID    uuid.UUID    `json:"run_id"`
+	Symbol   string       `json:"symbol"`
+	Count    int          `json:"count"`
+	Total    int64        `json:"total"`
+	Sampled  bool         `json:"sampled"`
+	TS       []int64      `json:"ts"`
+	Equity   []int64      `json:"equity"`
+	Hold     []int64      `json:"hold,omitempty"`
+	Index    []int64      `json:"index,omitempty"`
+	Drawdown []float64    `json:"drawdown"`
+	Symbols  []sleeveBody `json:"symbols,omitempty"`
+}
+
+// A sleeve carries no stamps of its own: it was stored on the run's timeline and sampled the
+// same way, so it lines up with TS above point for point.
+type sleeveBody struct {
+	Symbol string  `json:"symbol"`
+	Equity []int64 `json:"equity"`
 }
 
 type runsBody struct {
@@ -226,7 +234,45 @@ func (s *Server) handleBacktestEquity(w http.ResponseWriter, r *http.Request) {
 		body.Index = index
 	}
 
+	body.Symbols = s.sleevesOf(r, run.ID, points, len(rows))
+
 	respondJSON(w, r, http.StatusOK, body)
+}
+
+// Per-stock curves are a basket's alone, so a run without them simply has no symbols block.
+// A sleeve whose sample came back a different length is dropped rather than drawn against
+// the wrong stamps.
+func (s *Server) sleevesOf(r *http.Request, runID uuid.UUID, points, want int) []sleeveBody {
+	rows, err := s.queries.ListBacktestSymbolEquity(r.Context(), database.ListBacktestSymbolEquityParams{
+		RunID:   runID,
+		Column2: int64(points),
+	})
+	if err != nil {
+		s.logError(r, "reading per-symbol equity curves", err)
+		return nil
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	order := []string{}
+	curves := map[string][]int64{}
+	for _, row := range rows {
+		if _, seen := curves[row.Ticker]; !seen {
+			order = append(order, row.Ticker)
+		}
+		curves[row.Ticker] = append(curves[row.Ticker], row.EquityCents)
+	}
+
+	sleeves := make([]sleeveBody, 0, len(order))
+	for _, ticker := range order {
+		if len(curves[ticker]) != want {
+			continue
+		}
+		sleeves = append(sleeves, sleeveBody{Symbol: ticker, Equity: curves[ticker]})
+	}
+
+	return sleeves
 }
 
 // One query for every run on the page, rather than one per run: a list of twenty portfolio

@@ -79,6 +79,41 @@ func (q *Queries) CreateBacktestRunSymbols(ctx context.Context, arg []CreateBack
 	return q.db.CopyFrom(ctx, []string{"backtest_run_symbols"}, []string{"run_id", "ord", "symbol_id"}, &iteratorForCreateBacktestRunSymbols{rows: arg})
 }
 
+// iteratorForCreateBacktestSymbolEquity implements pgx.CopyFromSource.
+type iteratorForCreateBacktestSymbolEquity struct {
+	rows                 []CreateBacktestSymbolEquityParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateBacktestSymbolEquity) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateBacktestSymbolEquity) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].RunID,
+		r.rows[0].SymbolID,
+		r.rows[0].Ts,
+		r.rows[0].EquityCents,
+	}, nil
+}
+
+func (r iteratorForCreateBacktestSymbolEquity) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateBacktestSymbolEquity(ctx context.Context, arg []CreateBacktestSymbolEquityParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"backtest_symbol_equity"}, []string{"run_id", "symbol_id", "ts", "equity_cents"}, &iteratorForCreateBacktestSymbolEquity{rows: arg})
+}
+
 // iteratorForCreateBacktestTrades implements pgx.CopyFromSource.
 type iteratorForCreateBacktestTrades struct {
 	rows                 []CreateBacktestTradesParams
@@ -204,4 +239,38 @@ func (r iteratorForCreateSweepSymbols) Err() error {
 
 func (q *Queries) CreateSweepSymbols(ctx context.Context, arg []CreateSweepSymbolsParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"backtest_sweep_symbols"}, []string{"sweep_id", "ord", "symbol_id"}, &iteratorForCreateSweepSymbols{rows: arg})
+}
+
+// iteratorForCreateSymbolBasketSymbols implements pgx.CopyFromSource.
+type iteratorForCreateSymbolBasketSymbols struct {
+	rows                 []CreateSymbolBasketSymbolsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForCreateSymbolBasketSymbols) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForCreateSymbolBasketSymbols) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].BasketID,
+		r.rows[0].Ord,
+		r.rows[0].SymbolID,
+	}, nil
+}
+
+func (r iteratorForCreateSymbolBasketSymbols) Err() error {
+	return nil
+}
+
+func (q *Queries) CreateSymbolBasketSymbols(ctx context.Context, arg []CreateSymbolBasketSymbolsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"symbol_basket_symbols"}, []string{"basket_id", "ord", "symbol_id"}, &iteratorForCreateSymbolBasketSymbols{rows: arg})
 }

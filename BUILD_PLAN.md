@@ -28,6 +28,8 @@ from scratch, and backtests user-built strategies against any symbol and timefra
 | Cash, P&L, fees | `int64` centavos — never float |
 | Backtest jobs | Postgres-backed job rows + in-process worker pool. No Redis, no external queue |
 | Strategy definition | Declarative JSON rule tree in `JSONB`, not embedded scripting |
+| Basket semantics | **Each stock is its own run on `capital / N`, nothing shared.** The aggregate is the sum of the sleeves; every stock also reports on its own *(Phase 15, replacing shared capital)* |
+| Candle fill cadence | **One pass per trading day at 20:00 America/Sao_Paulo**, day off the calendar, hour off the clock *(Phase 14, replacing a 5m poll on close + 30m)* |
 
 ### Why these
 
@@ -134,7 +136,7 @@ ALVO-Backtester/
 │   ├── ingest/                 # backfill + scheduled sync, gap detection
 │   ├── indicator/              # the framework + every indicator, one file each
 │   ├── strategy/               # rule-tree spec, validation, compilation, evaluation
-│   ├── backtest/               # engine, broker sim, portfolio, metrics
+│   ├── backtest/               # engine, broker sim, basket aggregation, metrics
 │   ├── api/                    # handlers, middleware, DTOs
 │   └── auth/                   # jwt, refresh tokens, password hashing
 ├── sql/
@@ -2438,10 +2440,12 @@ here are its best case rather than its expected one. Listed in Phase 11.
 
 - [x] Parameter sweeps: ranges per input, grid execution across the worker pool, results heatmap
 - [x] Walk-forward analysis: rolling in-sample optimize → out-of-sample test
-- [x] Portfolio backtests: one strategy across a basket, shared capital. **Shipped working and
+- [x] ~~Portfolio backtests: one strategy across a basket, shared capital.~~ **Shipped working and
       unreachable:** a comma-separated list in the symbol field was the whole interface, and
       nothing said so. Phase 12 gave it a placeholder, permanent help text and a live basket
-      summary, and fixed the `max_positions` default it had been quietly overriding
+      summary, and fixed the `max_positions` default it had been quietly overriding.
+      **Replaced in Phase 15:** a basket is now N independent runs on `capital / N` each,
+      aggregated. Shared cash and `max_positions` are gone
 - [x] Strategy sharing / public read-only links
 - [x] Borrow cost on short positions, and the hard-to-borrow list that says which shorts were
       actually available
@@ -2533,7 +2537,10 @@ falls out correctly for a ticker listed late, halted mid-run, or delisted before
 closes out on the last bar *it* has, not on the last bar the basket has, and everyone else's
 signal-to-fill spacing is untouched.
 
-**The seat count is checked at the fill, not at the signal.** A basket capped at three positions
+**The seat count is checked at the fill, not at the signal.** *(Retired in Phase 15 — nothing
+competes for cash any more, so there is no seat to check. Kept because it is why the mechanism
+was built the way it was, and because the lookahead argument below still governs the engine.)*
+A basket capped at three positions
 can have five symbols fire on the same close, and by the time the fourth fills, another symbol
 has taken the last seat. Checking at the signal would hand the strategy knowledge of an
 allocation that had not happened yet. `crowded_out` counts what this cost, so a report can say
@@ -2741,11 +2748,14 @@ next to the backtest worker pool, which means the cadence ships, restarts, and i
 same logs as everything else. It defaults to **off**: a dev box pulling this change must not
 quietly begin calling brapi.
 
-**It fires off the calendar, not off a clock.** The trigger is `session.Close + INGEST_CLOSE_DELAY`
-resolved through the same `Calendar` the resampler and gap report use, so holidays and B3's short
-sessions are handled by construction rather than by a cron expression that has never heard of
-Carnaval. A poll every five minutes asks the calendar whether the moment has passed; there is no
-wall-clock schedule to drift out of agreement with the trading day.
+**~~It fires off the calendar, not off a clock.~~ It picks the *day* off the calendar and the
+*hour* off a clock.** The trigger was `session.Close + INGEST_CLOSE_DELAY`, resolved through the
+same `Calendar` the resampler and gap report use, polled every five minutes. **Phase 14 moved the
+hour to a wall-clock `INGEST_FILL_AT` (20:00) and replaced the poll with one timer per trading
+day** — brapi keeps revising the closing candle for hours after the bell, so an offset from the
+close was measuring from the wrong event. The calendar still chooses the day, so holidays and
+B3's short sessions are still handled by construction rather than by a cron expression that has
+never heard of Carnaval.
 
 **"Already synced today" is a database question, not a variable.** `restart: unless-stopped` plus
 an in-memory flag would re-run the whole sync on every container restart after the close.
@@ -2850,8 +2860,10 @@ never wanted futures.
 **The tail's repeat guard is in memory, and that asymmetry is deliberate.** The candle sync reads
 `ingest_runs` because a duplicate costs ~300 requests; the futures tail costs four, so a mark on
 the scheduler is proportionate and the worst a restart can do is re-upsert rows that do not
-change. Guarding it *somehow* was not optional though — the scheduler polls every five minutes,
-so an unguarded tail would have re-run every five minutes from the close until midnight.
+change. Guarding it *somehow* was not optional though — the scheduler polled every five
+minutes, so an unguarded tail would have re-run every five minutes from the close until midnight.
+Phase 14 cut that to one wake per day, which narrows the window the guard covers to restarts
+rather than removing the need for it.
 
 **The help pages document the traps, not the buttons.** A tour of which field does what would
 have been shorter and useless: the controls are already labelled. What a user cannot see is that a
@@ -2972,6 +2984,187 @@ major refuses to start against a PG17 data directory, and the failure arrives du
 
 ---
 
+## Phase 14 — Saved baskets, and one fill a day
+
+Two changes that only make sense once the thing is deployed and someone is using it: a place to
+keep the symbol lists you actually run, and a fill schedule pinned to when brapi is done rather
+than to when the bell rang.
+
+- [x] `symbol_baskets` + `symbol_basket_symbols` (migration `00019`): a named, ordered, per-user
+      list of symbols. Membership is a join table with an `ord` column, the same shape
+      `backtest_run_symbols` already uses
+- [x] `GET|POST /api/v1/baskets` and `GET|PUT|DELETE /api/v1/baskets/{id}`, all behind
+      `requireAuth`. 50 baskets per user, 20 symbols each
+- [x] The ingest trigger moves from "close + `INGEST_CLOSE_DELAY`" to a wall-clock
+      `INGEST_FILL_AT`, defaulting to **20:00** in the exchange timezone
+- [x] The five-minute poll becomes one timer per trading day
+- [x] Frontend: a `Baskets` panel off the nav to manage them, and a `BasketBar` above the symbol
+      field in both the backtest and sweep forms to load one or save the current list
+
+**Done when:** a user can save a basket, get it back with its symbols in the order they sent them,
+and the scheduler logs exactly one `scheduled sync finished` per trading day at 20:00.
+**Met.** Migration `00019` applied, `make check` green, both panels reading `/api/v1/baskets`.
+
+### Decisions this phase forced
+
+**"Basket" already meant something, and the new thing is the same thing.** `backtest_run_symbols`
+and `backtest_sweep_symbols` both call their membership a basket, so a saved list is not a new
+concept — it is the same list, named and kept. That is why the tables are `symbol_baskets` rather
+than `watchlists` or `favorites`, and why `readSavedBasket` runs the caller's tickers through the
+same `normalizeTickers` that `readBasket` uses: uppercased, de-duplicated, capped at
+`maxBasket`. A basket you can save but not run would be a trap, and the cap is where that would
+have leaked in.
+
+**The five-minute number was a poll interval, not a fill cadence.** The old loop woke every five
+minutes and asked `DueAt` whether the trigger had passed; `alreadySynced` then read `ingest_runs`
+and let exactly one pass through per session. So the fill was already daily — what ran 288 times
+a day was a database read and an arithmetic comparison. Replacing the ticker with one timer per
+trading day changes the cost of the loop, not the number of brapi requests, which was never the
+thing that needed fixing. Worth stating plainly because the log line said `poll_interval=5m` and
+read like a cadence.
+
+**The trigger is a time of day, not an offset from the close.** brapi keeps revising the day's
+closing candle for hours after 17:00, so an offset from the bell is measuring from the wrong
+event — the question is "when is the provider done", and the answer is a wall-clock hour that has
+nothing to do with when a given session ended. This also makes short holiday sessions a non-issue:
+a 13:00 close does not pull the fill forward to 13:30 and catch brapi mid-revision.
+
+**`DueAt` still clamps to the session close.** The clamp cannot fire in normal operation — 20:00 is
+after every B3 close there is — but a mistyped `INGEST_FILL_AT=11:00` would otherwise spend ~300
+requests on a session still in progress and write a day of partial candles that the
+`ingest_runs` guard would then refuse to redo. The failure is silent and the fix is three lines.
+
+**The day still comes off the trading calendar.** Only the hour is fixed. `NextRun` walks forward
+from today until it finds a session whose fill time is still in the future, so weekends and
+holidays move the trigger rather than burning a pass, and nobody maintains a cron expression that
+knows about Carnaval. The 30-day lookahead is a guard against a calendar with no trading days at
+all, not a real limit.
+
+**A restart still catches up.** `Run` ticks once before it starts sleeping, so a deploy at 21:00
+gets that day's candles. `ingest_runs` makes the catch-up free when the pass already ran, which is
+the same guard that made the old poll safe.
+
+**The basket picker writes into the symbol field rather than replacing it.** Both forms already
+took a comma separated list, and `POST /backtests` still goes out as `symbols`. Selecting a basket
+sets the field's text and then gets out of the way, so a saved basket is a starting point you can
+edit rather than a mode the form switches into. `BasketBar` shows a `•` once the field has drifted
+from the basket it was loaded from, which is the same dirty marker `LayoutBar` uses.
+
+**`BasketBar` sits outside the launch `<form>`, not inside it.** Its "Save as" prompt is itself a
+form, and a nested `<form>` is invalid HTML that browsers silently unnest — which would have made
+the outer submit fire on naming a basket. It reads as part of the form and is a sibling of it.
+
+**Managing baskets is a panel, not more controls on the launch form.** Reordering, renaming and
+removing tickers need room, and the launch form is already seven fields wide. The panel is also
+where a basket earns its keep outside a backtest: clicking a ticker charts it, which is the
+"favourites" half of the feature the forms cannot express.
+
+**`parseField` de-duplicates in the browser, which the two forms previously did not.** The API has
+always de-duplicated server-side, so typing `PETR4, PETR4` stored one symbol while the form
+counted two and sized `max_positions` off the wrong number. Sharing one parser between the forms
+and the basket comparison is also what stops a saved basket reading as permanently dirty.
+
+**Baskets have no signed-out fallback, unlike layouts.** `layouts.ts` keeps a `localStorage` copy
+because indicators work with no account. Baskets feed backtests, which already require one, so the
+panel asks you to sign in rather than growing a second storage path that could disagree with the
+server.
+
+**Membership is replaced wholesale, not patched.** `PUT /api/v1/baskets/{id}` takes the full name
+and symbol list and rewrites both inside one transaction, the way `createRun` writes a run and its
+basket together. There is no add-one/remove-one endpoint: the client already holds the whole list
+to render it, and a partial API would need conflict rules for an `ord` sequence that nobody is
+editing concurrently.
+
+---
+
+## Phase 15 — A basket is N runs, not one portfolio
+
+Phase 11 made a basket a single portfolio on shared cash, with `max_positions` deciding how
+many of its symbols could be held at once. That answers "how would this strategy have run a
+portfolio". The question actually being asked is "does this strategy work on these stocks",
+and for that the sharing is noise: a stock's result depended on what it happened to be run
+alongside, and on the order the basket was listed in.
+
+- [x] Every stock in a basket is its own run on `capital / N`, with nothing shared — no cash,
+      no position count. The aggregate is the sum of the sleeves' curves
+- [x] `max_positions` retires from the request, the engine, the metrics and both forms. The
+      `backtest_runs` / `backtest_sweeps` columns stay, written as the symbol count
+- [x] `SymbolStats` grows from a trade tally into a full result: capital, return, CAGR,
+      volatility, drawdown, Sharpe, Sortino, Calmar, profit factor, time in market
+- [x] `backtest_symbol_equity` (migration `00020`) stores each sleeve's curve; the report
+      overlays them on the aggregate, rebased to a common start
+- [x] `GET /backtests/{id}/equity` carries a `symbols` block alongside the aggregate curve
+
+**Done when:** a two-stock basket produces the same numbers for each stock as running that
+stock alone on half the capital, and the report shows both the aggregate and the breakdown.
+**Met.** Migration `00020` applied, `make check` green, and the equality is pinned by
+`TestASleeveMatchesTheSameStockRunAlone` rather than left to inspection.
+
+### Decisions this phase forced
+
+**The sleeves split the capital rather than each getting all of it.** Giving every stock the
+full capital makes the per-stock returns clean but leaves the aggregate with no real equity
+curve — only an average of percentages, which cannot be drawn in cents, compared against the
+index benchmark, or handed to the drawdown and Sharpe code that already exists. Splitting
+1/N keeps the aggregate a portfolio that starts at `capital_cents` and ends at the sum of its
+sleeves, so every number downstream keeps working and stays comparable with runs from before
+this phase. `splitCapital` hands the remainder to the first sleeves so they add back up
+exactly.
+
+**The engine did not need rewriting; it needed to be run N times.** It already handled one
+book correctly, and a single book has one position, so the seat gate was the only thing that
+made a basket a portfolio. Deleting `e.open` and calling the existing engine once per stock
+is a much smaller change than teaching it a second set of semantics, and it is why a sleeve's
+numbers are *identical* to the same stock run alone rather than merely similar.
+
+**Sleeve curves are stored on the union timeline, not on each stock's own bars.** A stock
+that was halted, listed late or delisted has fewer bars than the run. Storing its curve on
+its own stamps would mean every sleeve sampled to a different set of points and no way to
+draw them on one axis. Forward-filling onto the union — carrying untouched capital before the
+first bar and the final value after the last — costs N x bars rows and makes the sleeve
+curves line up with the aggregate point for point, which is what lets one `points` parameter
+downsample all of them identically.
+
+**Time in market is a union, not a sum.** Two sleeves exposed on the same bar is one bar the
+run was exposed on. Summing the sleeves' counts would let a twenty-stock basket report 1,400%
+time in market. Each sleeve records the stamps it actually held on and the aggregate counts
+the distinct ones.
+
+**The merged trade log is renumbered.** `Seq` is half of `backtest_trades`' primary key, and
+every sleeve numbers its own trades from one. The merge sorts by entry, then exit, then
+ticker — a total order that does not depend on the basket's listed order — and renumbers.
+
+**Consecutive losses and profit factor are read across the merged log, not per stock.** Both
+are properties of the run as a whole, so `tallyTrades` was lifted out of the engine and is
+now given the merged trades and the union timeline. The per-stock versions live on each
+sleeve's own row.
+
+**Benchmarks are summed, not recomputed.** Each sleeve already builds a buy-and-hold and an
+index curve scaled to its own share, so adding them gives an equal-weight benchmark for the
+whole basket by construction — the same weighting the old `holdBenchmark` did by hand. If any
+one sleeve has no comparable curve the whole benchmark drops out rather than quietly
+comparing the strategy against a fraction of itself.
+
+**The chart rebases the sleeves.** A sleeve holds 1/N of the money, so drawn in cents twenty
+of them sit in a band below the aggregate and flatten it. Rebasing each to the run's opening
+value puts them on one axis where the question — which stock bent the curve, and when — is
+actually legible. The overlay is off by default and says it is rebased.
+
+**Per-sleeve curves multiply the equity rows by the size of the basket.** A twenty-stock basket
+writes twenty curves on the union timeline plus the aggregate. On daily bars that is noise —
+twenty symbols over five years is ~25k rows. On 5m it is not: the same basket over the 48
+sessions actually in the store is ~80k rows per run, and the run rows are what the backup
+carries. Nothing caps it today. If it becomes a problem the fix is to store sleeve curves at a
+coarser sampling than the aggregate rather than to stop storing them, since the report already
+downsamples on read.
+
+**Existing runs keep their stored metrics and cannot be reproduced.** A run from before this
+phase was a shared-cash portfolio; its `metrics` JSON still says so and the report still
+renders it. Re-running it now gives different numbers, correctly. Nothing migrates old runs,
+because there is no honest conversion between the two.
+
+---
+
 ## Known traps
 
 Collected here because the code carries no comments — this is where the reasoning lives.
@@ -3057,13 +3250,22 @@ Collected here because the code carries no comments — this is where the reason
     a roll gap, a liquidity crossover, a spread — has to look at the session *before* the roll,
     where both still settle. Measured on the roll day it finds one contract and silently produces
     a zero.
-19. **A default that the API and the UI disagree about is a silent wrong answer.** `max_positions`
-    reads `0` as "hold every name in the basket", which is what someone typing a list of tickers
-    means. The panel defaulted the field to `1` and always sent it, so a three-name basket ran as
-    a one-at-a-time rotation — a different strategy entirely, with nothing on screen saying so and
-    no error to notice. The field now follows the basket until it is explicitly changed. The
+19. **A default that the API and the UI disagree about is a silent wrong answer.** *(The knob is
+    gone as of Phase 15; the trap is not.)* `max_positions` read `0` as "hold every name in the
+    basket", which is what someone typing a list of tickers means. The panel defaulted the field
+    to `1` and always sent it, so a three-name basket ran as a one-at-a-time rotation — a
+    different strategy entirely, with nothing on screen saying so and no error to notice. The
     general shape: a default that exists in two places will eventually only be right in one of
-    them, and the failure is a plausible number rather than a crash.
+    them, and the failure is a plausible number rather than a crash. Phase 15's answer was to
+    delete the second place rather than keep the two in agreement.
+20. **A rate that is a share of a shared timeline must be unioned, not summed.** Twenty sleeves
+    each holding a position on the same bar is *one* bar the run was exposed on, not twenty.
+    Summing the sleeves' `bars_in_market` and dividing by the run's bar count gives a time in
+    market of up to 2,000% — and at three or four symbols it lands somewhere merely wrong rather
+    than obviously impossible, which is the dangerous range. Each sleeve records the stamps it
+    actually held on and the aggregate counts the distinct ones. The same applies to anything
+    else per-symbol that is a fraction of the run's calendar rather than a quantity: cash, P&L
+    and fees add up across sleeves; exposure, drawdown and every ratio do not.
 
 ---
 

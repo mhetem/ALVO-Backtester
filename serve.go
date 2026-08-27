@@ -108,9 +108,9 @@ func startScheduler(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, 
 		ingest.NewFuturesIngester(pool, client, calendar, log),
 		log,
 		ingest.ScheduleOptions{
-			Intraday:   cfg.IngestIntraday,
-			Futures:    cfg.IngestFutures,
-			CloseDelay: cfg.IngestDelay,
+			Intraday: cfg.IngestIntraday,
+			Futures:  cfg.IngestFutures,
+			FillAt:   cfg.IngestFillAt,
 		},
 	)
 

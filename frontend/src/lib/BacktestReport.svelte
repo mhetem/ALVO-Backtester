@@ -25,6 +25,7 @@
 
   const metrics = $derived(run.metrics ?? null);
   const intraday = $derived(run.timeframe !== '1d');
+  const tickers = $derived(run.symbols ?? [run.symbol]);
 
   const hold = $derived(metrics?.benchmarks?.find((b) => b.kind === 'buy_and_hold') ?? null);
   const index = $derived(metrics?.benchmarks?.find((b) => b.kind === 'index') ?? null);
@@ -56,9 +57,8 @@
     return `${m.avg_holding_bars.toFixed(1)} bars`;
   }
 
-  function barShare(bars: number): number {
-    const total = metrics?.bars ?? 0;
-    return total > 0 ? (bars / total) * 100 : 0;
+  function ratio(value: number | null): string {
+    return value === null ? '—' : formatRatio(value);
   }
 
   function drawdownSpan(m: Metrics): string {
@@ -189,36 +189,53 @@
 
       {#if perSymbol.length > 0}
         <h4>By symbol</h4>
-        <table class="grid">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Trades</th>
-              <th>Win rate</th>
-              <th>P&amp;L</th>
-              <th>Contribution</th>
-              <th>Fees</th>
-              <th>Dividends</th>
-              <th>Borrow</th>
-              <th>In market</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each perSymbol as stats (stats.symbol)}
+        <p class="aside">
+          Each stock was backtested on its own slice of the capital, with nothing shared
+          between them. Its return is measured against that slice; its contribution is what
+          it did to the whole run.
+        </p>
+        <div class="scroll">
+          <table class="grid">
+            <thead>
               <tr>
-                <td>{stats.symbol}</td>
-                <td>{stats.trades}</td>
-                <td>{stats.trades > 0 ? formatPct(stats.win_rate_pct, 1) : '—'}</td>
-                <td class={tone(stats.pnl_cents)}>{formatSignedCents(stats.pnl_cents)}</td>
-                <td class={tone(stats.contribution_pct)}>{formatSignedPct(stats.contribution_pct)}</td>
-                <td>{formatCents(stats.fees_cents)}</td>
-                <td>{stats.dividends_cents ? formatCents(stats.dividends_cents) : '—'}</td>
-                <td>{stats.borrow_cents ? formatCents(stats.borrow_cents) : '—'}</td>
-                <td>{formatPct(barShare(stats.bars_in_market), 1)}</td>
+                <th>Symbol</th>
+                <th>Capital</th>
+                <th>Return</th>
+                <th>Contribution</th>
+                <th>P&amp;L</th>
+                <th>Sharpe</th>
+                <th>Max DD</th>
+                <th>Trades</th>
+                <th>Win rate</th>
+                <th>Profit factor</th>
+                <th>In market</th>
+                <th>Fees</th>
+                <th>Dividends</th>
+                <th>Borrow</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each perSymbol as stats (stats.symbol)}
+                <tr>
+                  <td>{stats.symbol}</td>
+                  <td>{formatCents(stats.capital_cents)}</td>
+                  <td class={tone(stats.return_pct)}>{formatSignedPct(stats.return_pct)}</td>
+                  <td class={tone(stats.contribution_pct)}>{formatSignedPct(stats.contribution_pct)}</td>
+                  <td class={tone(stats.pnl_cents)}>{formatSignedCents(stats.pnl_cents)}</td>
+                  <td>{formatRatio(stats.sharpe)}</td>
+                  <td class="down">{formatPct(stats.max_drawdown.pct, 1)}</td>
+                  <td>{stats.trades}</td>
+                  <td>{stats.trades > 0 ? formatPct(stats.win_rate_pct, 1) : '—'}</td>
+                  <td>{stats.trades > 0 ? ratio(stats.profit_factor) : '—'}</td>
+                  <td>{formatPct(stats.time_in_market_pct, 1)}</td>
+                  <td>{formatCents(stats.fees_cents)}</td>
+                  <td>{stats.dividends_cents ? formatCents(stats.dividends_cents) : '—'}</td>
+                  <td>{stats.borrow_cents ? formatCents(stats.borrow_cents) : '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
 
       <h4>Trades</h4>
@@ -275,11 +292,12 @@
             </dd>
           </div>
         {/if}
-        {#if run.max_positions > 1}
+        {#if tickers.length > 1}
           <div>
             <dt>Basket</dt>
             <dd>
-              {(run.symbols ?? [run.symbol]).length} symbols, at most {run.max_positions} held at once
+              {tickers.length} symbols, each backtested on its own
+              {formatCents(Math.round(run.capital_cents / tickers.length))}
             </dd>
           </div>
         {/if}
@@ -308,13 +326,6 @@
           <p class="warn">
             {metrics.shorts_unavailable} short entr{metrics.shorts_unavailable === 1 ? 'y' : 'ies'}
             found no shares to borrow on the day they would have filled.
-          </p>
-        {/if}
-        {#if metrics.crowded_out > 0}
-          <p class="warn">
-            {metrics.crowded_out} entr{metrics.crowded_out === 1 ? 'y' : 'ies'} fired with every
-            position already taken. Raising how many the basket may hold at once would have let
-            them in.
           </p>
         {/if}
         {#if metrics.borrow_stale}
@@ -469,6 +480,17 @@
     text-transform: uppercase;
     color: var(--muted);
     font-weight: 600;
+  }
+
+  .scroll {
+    overflow-x: auto;
+  }
+
+  .aside {
+    margin: 0 0 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--muted);
   }
 
   .grid {

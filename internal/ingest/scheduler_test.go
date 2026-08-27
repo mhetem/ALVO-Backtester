@@ -17,11 +17,8 @@ func testScheduler(t *testing.T, opts ScheduleOptions) *Scheduler {
 func TestNewSchedulerFillsDefaults(t *testing.T) {
 	scheduler := testScheduler(t, ScheduleOptions{})
 
-	if scheduler.opts.CloseDelay != DefaultCloseDelay {
-		t.Errorf("CloseDelay = %s, want %s", scheduler.opts.CloseDelay, DefaultCloseDelay)
-	}
-	if scheduler.opts.PollInterval != DefaultPollInterval {
-		t.Errorf("PollInterval = %s, want %s", scheduler.opts.PollInterval, DefaultPollInterval)
+	if scheduler.opts.FillAt != DefaultFillAt {
+		t.Errorf("FillAt = %s, want %s", Clock(scheduler.opts.FillAt), Clock(DefaultFillAt))
 	}
 	if scheduler.opts.RunTimeout != DefaultRunTimeout {
 		t.Errorf("RunTimeout = %s, want %s", scheduler.opts.RunTimeout, DefaultRunTimeout)
@@ -31,10 +28,10 @@ func TestNewSchedulerFillsDefaults(t *testing.T) {
 	}
 }
 
-// The trigger comes off the trading calendar, so a short session moves it and a holiday
-// removes it, without anyone maintaining a cron expression.
-func TestDueAtFollowsTheSessionClose(t *testing.T) {
-	scheduler := testScheduler(t, ScheduleOptions{CloseDelay: 30 * time.Minute})
+// The day is still chosen off the trading calendar, so a holiday removes the trigger
+// without anyone maintaining a cron expression; only the hour is now fixed.
+func TestDueAtIsTheConfiguredHourOnATradingDay(t *testing.T) {
+	scheduler := testScheduler(t, ScheduleOptions{FillAt: 20 * time.Hour})
 	calendar := scheduler.ingester.Calendar()
 
 	trading, err := calendar.NextTradingDay(time.Date(2026, 8, 24, 12, 0, 0, 0, calendar.Location()))
@@ -51,11 +48,89 @@ func TestDueAtFollowsTheSessionClose(t *testing.T) {
 	if !ok {
 		t.Fatal("DueAt reported no trigger on a trading day")
 	}
-	if want := session.Close.Add(30 * time.Minute); !due.Equal(want) {
-		t.Errorf("due at %s, want %s (close + 30m)", due, want)
+
+	local := due.In(calendar.Location())
+	if local.Hour() != 20 || local.Minute() != 0 {
+		t.Errorf("due at %s, want 20:00 in %s", local.Format(time.TimeOnly), calendar.Location())
+	}
+	if local.Format(time.DateOnly) != trading.Format(time.DateOnly) {
+		t.Errorf("due on %s, want the trading day %s", local.Format(time.DateOnly), trading.Format(time.DateOnly))
 	}
 	if !due.After(session.Close) {
 		t.Error("the trigger is not after the close")
+	}
+}
+
+// An hour earlier than the bell would spend ~300 requests on a session still in progress,
+// so a misconfigured one is dragged back to the close.
+func TestDueAtNeverFiresBeforeTheClose(t *testing.T) {
+	scheduler := testScheduler(t, ScheduleOptions{FillAt: 11 * time.Hour})
+	calendar := scheduler.ingester.Calendar()
+
+	trading, err := calendar.NextTradingDay(time.Date(2026, 8, 24, 12, 0, 0, 0, calendar.Location()))
+	if err != nil {
+		t.Fatalf("NextTradingDay: %v", err)
+	}
+
+	session, ok := calendar.Session(trading)
+	if !ok {
+		t.Fatalf("%s came back from NextTradingDay but has no session", trading.Format(time.DateOnly))
+	}
+
+	due, ok := scheduler.DueAt(trading)
+	if !ok {
+		t.Fatal("DueAt reported no trigger on a trading day")
+	}
+	if !due.Equal(session.Close) {
+		t.Errorf("due at %s, want the close %s", due, session.Close)
+	}
+}
+
+// The five-minute poll rediscovered the trigger on every tick. A single timer per day has
+// to land on the next session by itself, weekends and holidays included.
+func TestNextRunSkipsANonTradingDay(t *testing.T) {
+	scheduler := testScheduler(t, ScheduleOptions{FillAt: 20 * time.Hour})
+	calendar := scheduler.ingester.Calendar()
+
+	// 2026-08-22 is a Saturday.
+	saturday := calendar.Date(2026, time.August, 22)
+	if calendar.IsTradingDay(saturday) {
+		t.Fatal("fixture day is a trading day; pick another")
+	}
+
+	next, ok := scheduler.NextRun(saturday)
+	if !ok {
+		t.Fatal("NextRun found no trigger within the lookahead")
+	}
+	if !calendar.IsTradingDay(next) {
+		t.Errorf("next run %s is not on a trading day", next.In(calendar.Location()).Format(time.DateOnly))
+	}
+	if !next.After(saturday) {
+		t.Errorf("next run %s is not after %s", next, saturday)
+	}
+}
+
+// Waking at the trigger and immediately scheduling the same trigger again would spin.
+func TestNextRunMovesPastATriggerAlreadyServed(t *testing.T) {
+	scheduler := testScheduler(t, ScheduleOptions{FillAt: 20 * time.Hour})
+	calendar := scheduler.ingester.Calendar()
+
+	trading, err := calendar.NextTradingDay(time.Date(2026, 8, 24, 12, 0, 0, 0, calendar.Location()))
+	if err != nil {
+		t.Fatalf("NextTradingDay: %v", err)
+	}
+
+	due, ok := scheduler.DueAt(trading)
+	if !ok {
+		t.Fatal("DueAt reported no trigger on a trading day")
+	}
+
+	next, ok := scheduler.NextRun(due)
+	if !ok {
+		t.Fatal("NextRun found no trigger within the lookahead")
+	}
+	if !next.After(due) {
+		t.Errorf("next run %s is not after the trigger it just served, %s", next, due)
 	}
 }
 
@@ -112,7 +187,7 @@ func TestSyncFuturesIsSkippedWithoutAnIngester(t *testing.T) {
 }
 
 // The tail costs one request per root, so the repeat guard is an in-memory mark rather than
-// a database read — but it still has to stop a five-minute poll re-running it all evening.
+// a database read — but it still has to stop a restart re-running it the same evening.
 func TestSyncFuturesRunsOncePerTrigger(t *testing.T) {
 	scheduler := testScheduler(t, ScheduleOptions{Futures: true})
 	due := time.Now()

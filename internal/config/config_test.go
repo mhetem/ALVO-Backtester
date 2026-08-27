@@ -28,8 +28,8 @@ func TestLoadDefaultsTheIngestScheduler(t *testing.T) {
 	if !cfg.IngestFutures {
 		t.Error("INGEST_FUTURES defaulted off; the tail is a no-op until futures are backfilled, so it costs nothing to leave on")
 	}
-	if cfg.IngestDelay != DefaultIngestDelay {
-		t.Errorf("IngestDelay = %s, want %s", cfg.IngestDelay, DefaultIngestDelay)
+	if cfg.IngestFillAt != DefaultIngestFillAt {
+		t.Errorf("IngestFillAt = %s, want %s", cfg.IngestFillAt, DefaultIngestFillAt)
 	}
 }
 
@@ -38,7 +38,7 @@ func TestLoadReadsIngestSettings(t *testing.T) {
 	t.Setenv("INGEST_ENABLED", "true")
 	t.Setenv("INGEST_INTRADAY", "false")
 	t.Setenv("INGEST_FUTURES", "false")
-	t.Setenv("INGEST_CLOSE_DELAY", "45m")
+	t.Setenv("INGEST_FILL_AT", "21:30")
 
 	cfg, err := Load()
 	if err != nil {
@@ -54,8 +54,8 @@ func TestLoadReadsIngestSettings(t *testing.T) {
 	if cfg.IngestFutures {
 		t.Error("INGEST_FUTURES=false was not read")
 	}
-	if cfg.IngestDelay != 45*time.Minute {
-		t.Errorf("IngestDelay = %s, want 45m", cfg.IngestDelay)
+	if want := 21*time.Hour + 30*time.Minute; cfg.IngestFillAt != want {
+		t.Errorf("IngestFillAt = %s, want %s", cfg.IngestFillAt, want)
 	}
 }
 
@@ -64,8 +64,10 @@ func TestLoadRejectsMalformedIngestSettings(t *testing.T) {
 		{"INGEST_ENABLED", "yes please"},
 		{"INGEST_INTRADAY", "sometimes"},
 		{"INGEST_FUTURES", "maybe"},
-		{"INGEST_CLOSE_DELAY", "half an hour"},
-		{"INGEST_CLOSE_DELAY", "-5m"},
+		{"INGEST_FILL_AT", "half past eight"},
+		{"INGEST_FILL_AT", "-5m"},
+		{"INGEST_FILL_AT", "20h"},
+		{"INGEST_FILL_AT", "25:00"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			base(t)
@@ -78,15 +80,30 @@ func TestLoadRejectsMalformedIngestSettings(t *testing.T) {
 	}
 }
 
-func TestEnvBoolAndDurationFallBackWhenUnset(t *testing.T) {
+func TestEnvBoolAndClockFallBackWhenUnset(t *testing.T) {
 	got, err := envBool("ALVO_MISSING_BOOL", true)
 	if err != nil || !got {
 		t.Errorf("envBool fallback = %v, %v", got, err)
 	}
 
-	dur, err := envDuration("ALVO_MISSING_DURATION", 90*time.Second)
-	if err != nil || dur != 90*time.Second {
-		t.Errorf("envDuration fallback = %v, %v", dur, err)
+	clock, err := envClock("ALVO_MISSING_CLOCK", 20*time.Hour)
+	if err != nil || clock != 20*time.Hour {
+		t.Errorf("envClock fallback = %v, %v", clock, err)
+	}
+}
+
+func TestEnvClockReadsAnHourOfTheDay(t *testing.T) {
+	for raw, want := range map[string]time.Duration{
+		"20:00": 20 * time.Hour,
+		"08:30": 8*time.Hour + 30*time.Minute,
+		"00:00": 0,
+		"23:59": 23*time.Hour + 59*time.Minute,
+	} {
+		t.Setenv("ALVO_CLOCK", raw)
+		got, err := envClock("ALVO_CLOCK", time.Hour)
+		if err != nil || got != want {
+			t.Errorf("envClock(%q) = %v, %v, want %v", raw, got, err, want)
+		}
 	}
 }
 

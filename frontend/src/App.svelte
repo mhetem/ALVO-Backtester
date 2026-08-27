@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
 
   import BacktestPanel from './lib/BacktestPanel.svelte';
+  import BasketPanel from './lib/BasketPanel.svelte';
   import Chart from './lib/Chart.svelte';
   import IndicatorPanel from './lib/IndicatorPanel.svelte';
   import IndicatorPicker from './lib/IndicatorPicker.svelte';
@@ -75,6 +76,7 @@
   let strategyOpen = $state(false);
   let backtestOpen = $state(false);
   let sweepOpen = $state(false);
+  let basketsOpen = $state(false);
   let helpTopic = $state<HelpTopic | null>(null);
 
   let marks = $state<TradeMark[]>([]);
@@ -408,6 +410,12 @@
       </button>
     </div>
 
+    <div class="group" role="group" aria-label="Baskets">
+      <button type="button" class:on={basketsOpen} onclick={() => (basketsOpen = true)}>
+        Baskets
+      </button>
+    </div>
+
     <div class="group" role="group" aria-label="Help">
       <button
         type="button"
@@ -520,6 +528,15 @@
     {user}
     onClose={() => { if (helpTopic === null) sweepOpen = false; }}
     onHelp={() => (helpTopic = 'sweeps')}
+  />
+{/if}
+
+{#if basketsOpen}
+  <BasketPanel
+    {user}
+    {symbol}
+    onPick={(ticker) => (symbol = ticker)}
+    onClose={() => (basketsOpen = false)}
   />
 {/if}
 {/if}

@@ -69,6 +69,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/chart-layouts/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateChartLayout)))
 	mux.Handle("DELETE /api/v1/chart-layouts/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteChartLayout)))
 
+	mux.Handle("GET /api/v1/baskets", s.requireAuth(http.HandlerFunc(s.handleListBaskets)))
+	mux.Handle("POST /api/v1/baskets", s.requireAuth(http.HandlerFunc(s.handleCreateBasket)))
+	mux.Handle("GET /api/v1/baskets/{id}", s.requireAuth(http.HandlerFunc(s.handleGetBasket)))
+	mux.Handle("PUT /api/v1/baskets/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateBasket)))
+	mux.Handle("DELETE /api/v1/baskets/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteBasket)))
+
 	mux.Handle("POST /api/v1/strategies/validate", s.requireAuth(http.HandlerFunc(s.handleValidateStrategy)))
 	mux.Handle("GET /api/v1/strategies", s.requireAuth(http.HandlerFunc(s.handleListStrategies)))
 	mux.Handle("POST /api/v1/strategies", s.requireAuth(http.HandlerFunc(s.handleCreateStrategy)))

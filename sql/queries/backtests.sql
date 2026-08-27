@@ -130,3 +130,23 @@ ORDER BY ts;
 SELECT status, COUNT(*) AS runs FROM backtest_runs
 WHERE status IN ('queued', 'running')
 GROUP BY status;
+
+-- name: CreateBacktestSymbolEquity :copyfrom
+INSERT INTO backtest_symbol_equity (run_id, symbol_id, ts, equity_cents)
+VALUES ($1, $2, $3, $4);
+
+-- name: CountBacktestSymbolEquity :one
+SELECT COUNT(*) FROM backtest_symbol_equity WHERE run_id = $1;
+
+-- name: ListBacktestSymbolEquity :many
+SELECT ticker, ts, equity_cents
+FROM (
+    SELECT s.ticker, se.ts, se.equity_cents,
+           ROW_NUMBER() OVER (PARTITION BY se.symbol_id ORDER BY se.ts) AS n,
+           COUNT(*) OVER (PARTITION BY se.symbol_id) AS total
+    FROM backtest_symbol_equity se
+    JOIN symbols s ON s.id = se.symbol_id
+    WHERE se.run_id = $1
+) points
+WHERE (n - 1) % GREATEST((total + $2::bigint - 1) / $2::bigint, 1) = 0 OR n = total
+ORDER BY ticker, ts;

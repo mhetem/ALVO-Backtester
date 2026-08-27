@@ -58,9 +58,9 @@ type engine struct {
 	books   []*book
 	stamps  []time.Time
 	cash    int64
-	open    int
 	trades  []Trade
 	equity  []EquityPoint
+	held    []time.Time
 	hold    []int64
 	index   []int64
 	metrics Metrics
@@ -84,7 +84,6 @@ func newEngine(req Request) *engine {
 	e.equity = make([]EquityPoint, 0, len(e.stamps))
 
 	e.metrics.CapitalCents = req.Capital
-	e.metrics.MaxPositions = req.MaxPositions
 
 	return e
 }
@@ -116,7 +115,7 @@ func (e *engine) run() Result {
 
 	e.summarize()
 
-	return Result{Trades: e.trades, Equity: e.equity, Hold: e.hold, Index: e.index, Metrics: e.metrics}
+	return Result{Trades: e.trades, Equity: e.equity, Hold: e.hold, Index: e.index, Metrics: e.metrics, held: e.held}
 }
 
 func (e *engine) periods() float64 {
@@ -335,15 +334,6 @@ func closingSide(short bool) OrderSide {
 }
 
 func (e *engine) enter(b *book, candle market.Candle, want intent) {
-	// The seat count is checked at the fill, not at the signal: another symbol in the
-	// basket may have taken the last one in between, and a strategy that could not have
-	// known that is exactly what a portfolio run is measuring.
-	if e.open >= e.req.MaxPositions {
-		e.metrics.CrowdedOut++
-		e.metrics.SkippedEntries++
-		return
-	}
-
 	if want.short && e.req.Borrow != nil && !e.req.Borrow.Available(b.symbol.Ticker, candle.TS) {
 		e.metrics.ShortsUnavailable++
 		e.metrics.SkippedEntries++
@@ -394,7 +384,6 @@ func (e *engine) enter(b *book, candle market.Candle, want intent) {
 		stop:       want.stop.level(price, want.short),
 		target:     want.target.level(price, !want.short),
 	}
-	e.open++
 }
 
 func (e *engine) brackets(b *book, candle market.Candle) {
@@ -487,7 +476,6 @@ func (e *engine) record(b *book, ts time.Time, price float64, gross, fees int64,
 		b.stats.Losses++
 	}
 
-	e.open--
 	b.pos = position{}
 }
 
@@ -517,6 +505,7 @@ func (e *engine) mark(ts time.Time) {
 
 	if held {
 		e.metrics.BarsInMarket++
+		e.held = append(e.held, ts)
 	}
 
 	e.equity = append(e.equity, EquityPoint{TS: ts, Cents: equity})

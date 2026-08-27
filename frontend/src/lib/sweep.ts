@@ -88,7 +88,6 @@ export type Sweep = {
   start: string;
   end: string;
   capital_cents: number;
-  max_positions: number;
   points: number;
   axes: Axis[];
   folds?: Fold[];
@@ -106,7 +105,6 @@ export type SweepRequest = {
   start: string;
   end: string;
   capital_cents: number;
-  max_positions: number;
   axes: AxisDraft[];
   in_sample_days?: number;
   out_of_sample_days?: number;

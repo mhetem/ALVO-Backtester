@@ -1,21 +1,41 @@
 package backtest
 
-import "time"
+import (
+	"time"
 
+	"github.com/mhetem/ALVO-Backtester/internal/market"
+)
+
+// One stock's whole run. A basket is N of these plus the sum of their curves, so a sleeve
+// carries the same risk numbers the aggregate does rather than a trade tally alone.
 type SymbolStats struct {
-	Symbol          string  `json:"symbol"`
-	Basis           string  `json:"basis"`
-	Trades          int     `json:"trades"`
-	Wins            int     `json:"wins"`
-	Losses          int     `json:"losses"`
-	WinRatePct      float64 `json:"win_rate_pct"`
-	PnLCents        int64   `json:"pnl_cents"`
-	FeesCents       int64   `json:"fees_cents"`
-	DividendsCents  int64   `json:"dividends_cents"`
-	BorrowCents     int64   `json:"borrow_cents"`
-	BorrowAnnualPct float64 `json:"borrow_annual_pct"`
-	BarsInMarket    int     `json:"bars_in_market"`
-	ContributionPct float64 `json:"contribution_pct"`
+	Symbol           string      `json:"symbol"`
+	SymbolID         int64       `json:"-"`
+	Basis            string      `json:"basis"`
+	CapitalCents     int64       `json:"capital_cents"`
+	FinalEquityCents int64       `json:"final_equity_cents"`
+	Trades           int         `json:"trades"`
+	Wins             int         `json:"wins"`
+	Losses           int         `json:"losses"`
+	WinRatePct       float64     `json:"win_rate_pct"`
+	PnLCents         int64       `json:"pnl_cents"`
+	FeesCents        int64       `json:"fees_cents"`
+	DividendsCents   int64       `json:"dividends_cents"`
+	BorrowCents      int64       `json:"borrow_cents"`
+	BorrowAnnualPct  float64     `json:"borrow_annual_pct"`
+	BarsInMarket     int         `json:"bars_in_market"`
+	TimeInMarket     float64     `json:"time_in_market_pct"`
+	ContributionPct  float64     `json:"contribution_pct"`
+	ReturnPct        float64     `json:"return_pct"`
+	CAGRPct          float64     `json:"cagr_pct"`
+	VolatilityPct    float64     `json:"volatility_pct"`
+	MaxDrawdown      Drawdown    `json:"max_drawdown"`
+	Sharpe           float64     `json:"sharpe"`
+	Sortino          float64     `json:"sortino"`
+	Calmar           float64     `json:"calmar"`
+	ProfitFactor     *float64    `json:"profit_factor"`
+	ExpectancyCents  int64       `json:"expectancy_cents"`
+	Benchmarks       []Benchmark `json:"benchmarks,omitempty"`
 }
 
 type Metrics struct {
@@ -24,7 +44,6 @@ type Metrics struct {
 	BarsInMarket int     `json:"bars_in_market"`
 	TimeInMarket float64 `json:"time_in_market_pct"`
 	BarsPerYear  float64 `json:"bars_per_year"`
-	MaxPositions int     `json:"max_positions"`
 
 	CapitalCents     int64   `json:"capital_cents"`
 	FinalEquityCents int64   `json:"final_equity_cents"`
@@ -71,7 +90,6 @@ type Metrics struct {
 	ExitsAtEnd        int `json:"exits_at_end"`
 	AmbiguousBars     int `json:"ambiguous_bars"`
 	SkippedEntries    int `json:"skipped_entries"`
-	CrowdedOut        int `json:"crowded_out"`
 	ShortsUnavailable int `json:"shorts_unavailable"`
 	UnadjustedBars    int `json:"unadjusted_bars"`
 	UnpricedActions   int `json:"unpriced_actions"`
@@ -142,6 +160,7 @@ func (e *engine) describeSymbols() {
 	e.metrics.Symbols = make([]SymbolStats, 0, len(e.books))
 	for _, b := range e.books {
 		stats := b.stats
+		stats.SymbolID = b.symbol.ID
 		if stats.Trades > 0 {
 			stats.WinRatePct = float64(stats.Wins) / float64(stats.Trades) * 100
 		}
@@ -160,113 +179,127 @@ func (e *engine) describeSymbols() {
 }
 
 func (e *engine) tally() {
+	tallyTrades(&e.metrics, e.trades, e.stamps)
+}
+
+// Shared with the basket aggregate, which has a merged trade log and a union timeline but
+// counts wins, streaks and holding periods exactly the way one sleeve does.
+func tallyTrades(m *Metrics, trades []Trade, stamps []time.Time) {
 	grossWin, grossLoss := int64(0), int64(0)
 	streak, holding := 0, 0
-	stamps := e.stampIndex()
+	index := stampIndex(stamps)
 
-	for _, trade := range e.trades {
+	for _, trade := range trades {
 		switch {
 		case trade.PnLCents > 0:
-			e.metrics.Wins++
+			m.Wins++
 			grossWin += trade.PnLCents
-			e.metrics.LargestWinCents = max(e.metrics.LargestWinCents, trade.PnLCents)
+			m.LargestWinCents = max(m.LargestWinCents, trade.PnLCents)
 			streak = 0
 		case trade.PnLCents < 0:
-			e.metrics.Losses++
+			m.Losses++
 			grossLoss += -trade.PnLCents
-			e.metrics.LargestLossCents = min(e.metrics.LargestLossCents, trade.PnLCents)
+			m.LargestLossCents = min(m.LargestLossCents, trade.PnLCents)
 			streak++
-			e.metrics.MaxConsecLosses = max(e.metrics.MaxConsecLosses, streak)
+			m.MaxConsecLosses = max(m.MaxConsecLosses, streak)
 		default:
-			e.metrics.Scratches++
+			m.Scratches++
 			streak = 0
 		}
 
 		if trade.Side == SideShort {
-			e.metrics.ShortTrades++
+			m.ShortTrades++
 		} else {
-			e.metrics.LongTrades++
+			m.LongTrades++
 		}
 
-		e.metrics.FeesCents += trade.FeesCents
-		holding += stamps[trade.ExitTS.Unix()] - stamps[trade.EntryTS.Unix()]
+		m.FeesCents += trade.FeesCents
+		holding += index[trade.ExitTS.Unix()] - index[trade.EntryTS.Unix()]
 
 		switch trade.ExitReason {
 		case ReasonSignal:
-			e.metrics.ExitsBySignal++
+			m.ExitsBySignal++
 		case ReasonStop:
-			e.metrics.ExitsByStop++
+			m.ExitsByStop++
 		case ReasonTarget:
-			e.metrics.ExitsByTarget++
+			m.ExitsByTarget++
 		case ReasonSplit:
-			e.metrics.ExitsBySplit++
+			m.ExitsBySplit++
 		case ReasonEndOfRun:
-			e.metrics.ExitsAtEnd++
+			m.ExitsAtEnd++
 		}
 	}
 
-	if e.metrics.Trades == 0 {
+	if m.Trades == 0 {
 		return
 	}
 
-	e.metrics.WinRatePct = float64(e.metrics.Wins) / float64(e.metrics.Trades) * 100
-	e.metrics.ExpectancyCents = (grossWin - grossLoss) / int64(e.metrics.Trades)
-	e.metrics.AvgHoldingBars = float64(holding) / float64(e.metrics.Trades)
+	m.WinRatePct = float64(m.Wins) / float64(m.Trades) * 100
+	m.ExpectancyCents = (grossWin - grossLoss) / int64(m.Trades)
+	m.AvgHoldingBars = float64(holding) / float64(m.Trades)
 
-	if e.metrics.Wins > 0 {
-		e.metrics.AvgWinCents = grossWin / int64(e.metrics.Wins)
+	if m.Wins > 0 {
+		m.AvgWinCents = grossWin / int64(m.Wins)
 	}
-	if e.metrics.Losses > 0 {
-		e.metrics.AvgLossCents = -grossLoss / int64(e.metrics.Losses)
+	if m.Losses > 0 {
+		m.AvgLossCents = -grossLoss / int64(m.Losses)
 	}
 	// Gross win over gross loss is undefined without a loss to divide by. JSON has no
 	// infinity, and a zero here would read as the opposite of what happened, so the field
 	// is null and the report says "no losing trade" rather than printing a number.
 	if grossLoss > 0 {
 		factor := float64(grossWin) / float64(grossLoss)
-		e.metrics.ProfitFactor = &factor
+		m.ProfitFactor = &factor
 	}
 }
 
-func (e *engine) stampIndex() map[int64]int {
-	index := make(map[int64]int, len(e.stamps))
-	for i, ts := range e.stamps {
+func stampIndex(stamps []time.Time) map[int64]int {
+	index := make(map[int64]int, len(stamps))
+	for i, ts := range stamps {
 		index[ts.Unix()] = i
 	}
 	return index
 }
 
 func (e *engine) risk(steps, rf []float64, periods float64) {
-	first, last := e.equity[0], e.equity[len(e.equity)-1]
+	riskOf(&e.metrics, e.equity, steps, rf, periods)
+}
 
-	e.metrics.CAGRPct = cagr(first.Cents, last.Cents, last.TS.Sub(first.TS))
-	e.metrics.VolatilityPct = annualizedVol(steps, periods)
-	e.metrics.MaxDrawdown = deepestDrawdown(e.equity)
-	e.metrics.LongestDrawdownBars = longestDrawdown(e.equity)
-	e.metrics.Calmar = calmar(e.metrics.CAGRPct, e.metrics.MaxDrawdown.Pct)
+func riskOf(m *Metrics, equity []EquityPoint, steps, rf []float64, periods float64) {
+	first, last := equity[0], equity[len(equity)-1]
+
+	m.CAGRPct = cagr(first.Cents, last.Cents, last.TS.Sub(first.TS))
+	m.VolatilityPct = annualizedVol(steps, periods)
+	m.MaxDrawdown = deepestDrawdown(equity)
+	m.LongestDrawdownBars = longestDrawdown(equity)
+	m.Calmar = calmar(m.CAGRPct, m.MaxDrawdown.Pct)
 
 	excess := make([]float64, len(steps))
 	for i, step := range steps {
 		excess[i] = step - rf[i]
 	}
 
-	e.metrics.Sharpe = sharpe(excess, periods)
-	e.metrics.Sortino = sortino(excess, periods)
+	m.Sharpe = sharpe(excess, periods)
+	m.Sortino = sortino(excess, periods)
 }
 
 func (e *engine) riskFree(periods float64) []float64 {
-	rf := make([]float64, max(len(e.equity)-1, 0))
-	if e.req.Rates == nil {
+	return riskFreeOf(&e.metrics, e.req.Rates, e.equity, periods)
+}
+
+func riskFreeOf(m *Metrics, rates *market.Rates, equity []EquityPoint, periods float64) []float64 {
+	rf := make([]float64, max(len(equity)-1, 0))
+	if rates == nil {
 		return rf
 	}
 
 	for i := range rf {
-		rf[i] = e.req.Rates.PerPeriod(e.equity[i+1].TS, periods)
+		rf[i] = rates.PerPeriod(equity[i+1].TS, periods)
 	}
 
-	first, last := e.equity[0].TS, e.equity[len(e.equity)-1].TS
-	e.metrics.RiskFreePct = e.req.Rates.AnnualPct(last)
-	e.metrics.RiskFreeStale = !e.req.Rates.Covers(first, last)
+	first, last := equity[0].TS, equity[len(equity)-1].TS
+	m.RiskFreePct = rates.AnnualPct(last)
+	m.RiskFreeStale = !rates.Covers(first, last)
 
 	return rf
 }

@@ -45,16 +45,15 @@ type Instrument struct {
 }
 
 type Request struct {
-	Plan         *strategy.Plan
-	Instruments  []Instrument
-	MaxPositions int
-	Timeframe    market.Timeframe
-	Capital      int64
-	Index        []market.Candle
-	IndexSymbol  string
-	Rates        *market.Rates
-	Borrow       *market.Borrow
-	BarsPerYear  float64
+	Plan        *strategy.Plan
+	Instruments []Instrument
+	Timeframe   market.Timeframe
+	Capital     int64
+	Index       []market.Candle
+	IndexSymbol string
+	Rates       *market.Rates
+	Borrow      *market.Borrow
+	BarsPerYear float64
 }
 
 func (r Request) Basket() bool { return len(r.Instruments) > 1 }
@@ -82,12 +81,24 @@ type EquityPoint struct {
 	Cents int64     `json:"cents"`
 }
 
+// One stock's own curve inside a basket. The aggregate curve stays on Equity; these are
+// what the report overlays on it and what backtest_symbol_equity stores.
+type Sleeve struct {
+	Symbol   string        `json:"symbol"`
+	SymbolID int64         `json:"-"`
+	Capital  int64         `json:"capital_cents"`
+	Equity   []EquityPoint `json:"equity"`
+}
+
 type Result struct {
 	Trades  []Trade       `json:"trades"`
 	Equity  []EquityPoint `json:"equity"`
 	Hold    []int64       `json:"-"`
 	Index   []int64       `json:"-"`
+	Sleeves []Sleeve      `json:"-"`
 	Metrics Metrics       `json:"metrics"`
+
+	held []time.Time
 }
 
 func Run(req Request) (Result, error) {
@@ -108,12 +119,23 @@ func Run(req Request) (Result, error) {
 		}
 	}
 
-	if req.MaxPositions < 1 {
-		req.MaxPositions = len(req.Instruments)
+	shares := splitCapital(req.Capital, len(req.Instruments))
+	if shares[len(shares)-1] < 1 {
+		return Result{}, fmt.Errorf("%d cents split across %d symbols leaves less than a cent each",
+			req.Capital, len(req.Instruments))
 	}
-	req.MaxPositions = min(req.MaxPositions, len(req.Instruments))
 
-	return newEngine(req).run(), nil
+	// One symbol is its own aggregate: running it through the merge would recompute the
+	// same numbers off the same curve, so the sleeve result is returned as it stands.
+	if len(req.Instruments) == 1 {
+		result := runSleeve(req, req.Instruments[0], shares[0])
+		result.Metrics.Symbols = []SymbolStats{
+			sleeveStats(result, req.Instruments[0].Symbol, shares[0], req.Capital),
+		}
+		return result, nil
+	}
+
+	return runBasket(req, shares), nil
 }
 
 func candleFor(candle market.Candle) indicator.Candle {

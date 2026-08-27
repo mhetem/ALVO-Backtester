@@ -36,7 +36,6 @@ type backtestRequest struct {
 	Start        string   `json:"start"`
 	End          string   `json:"end"`
 	CapitalCents int64    `json:"capital_cents"`
-	MaxPositions int      `json:"max_positions"`
 }
 
 type backtestBody struct {
@@ -48,7 +47,6 @@ type backtestBody struct {
 	Start        string          `json:"start"`
 	End          string          `json:"end"`
 	CapitalCents int64           `json:"capital_cents"`
-	MaxPositions int32           `json:"max_positions"`
 	Status       string          `json:"status"`
 	Spec         json.RawMessage `json:"spec,omitempty"`
 	Metrics      json.RawMessage `json:"metrics,omitempty"`
@@ -91,12 +89,6 @@ func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tickers, err := readBasket(body.Symbol, body.Symbols)
-	if err != nil {
-		respondError(w, r, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	positions, err := readMaxPositions(body.MaxPositions, len(tickers))
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, err.Error())
 		return
@@ -149,7 +141,7 @@ func (s *Server) handleCreateBacktest(w http.ResponseWriter, r *http.Request) {
 		StartDate:    window.start,
 		EndDate:      window.end,
 		CapitalCents: window.capital,
-		MaxPositions: int32Of(positions),
+		MaxPositions: int32Of(len(tickers)),
 	}, basket)
 	if err != nil {
 		s.logError(r, "queueing a backtest", err)
@@ -273,6 +265,18 @@ func readBasket(single string, many []string) ([]string, error) {
 		raw = []string{single}
 	}
 
+	tickers, err := normalizeTickers(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(tickers) == 0 {
+		return nil, errors.New("symbol is required, as in PETR4, or symbols for a basket")
+	}
+
+	return tickers, nil
+}
+
+func normalizeTickers(raw []string) ([]string, error) {
 	tickers := make([]string, 0, len(raw))
 	seen := map[string]bool{}
 
@@ -285,24 +289,11 @@ func readBasket(single string, many []string) ([]string, error) {
 		tickers = append(tickers, clean)
 	}
 
-	switch {
-	case len(tickers) == 0:
-		return nil, errors.New("symbol is required, as in PETR4, or symbols for a basket")
-	case len(tickers) > maxBasket:
+	if len(tickers) > maxBasket {
 		return nil, fmt.Errorf("at most %d symbols in one basket, got %d", maxBasket, len(tickers))
 	}
 
 	return tickers, nil
-}
-
-func readMaxPositions(want, basket int) (int, error) {
-	if want == 0 {
-		return basket, nil
-	}
-	if want < 1 || want > basket {
-		return 0, fmt.Errorf("max_positions is between 1 and the %d symbols in the basket, got %d", basket, want)
-	}
-	return want, nil
 }
 
 func tickersOf(basket []database.Symbol) []string {
@@ -323,7 +314,6 @@ func queuedBacktest(row database.BacktestRun, tickers []string) backtestBody {
 		Start:        row.StartDate.Format(time.DateOnly),
 		End:          row.EndDate.Format(time.DateOnly),
 		CapitalCents: row.CapitalCents,
-		MaxPositions: row.MaxPositions,
 		Status:       row.Status,
 		Spec:         json.RawMessage(row.Spec),
 		CreatedAt:    row.CreatedAt,
@@ -348,7 +338,6 @@ func storedBacktest(row database.GetBacktestRunRow, tickers []string) backtestBo
 		Start:        row.StartDate.Format(time.DateOnly),
 		End:          row.EndDate.Format(time.DateOnly),
 		CapitalCents: row.CapitalCents,
-		MaxPositions: row.MaxPositions,
 		Status:       row.Status,
 		Spec:         json.RawMessage(row.Spec),
 		Metrics:      json.RawMessage(row.Metrics),

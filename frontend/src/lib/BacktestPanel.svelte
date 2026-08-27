@@ -2,6 +2,7 @@
   import { onDestroy, onMount, untrack } from 'svelte';
 
   import BacktestReport from './BacktestReport.svelte';
+  import BasketBar from './BasketBar.svelte';
   import { describe, HttpError, TIMEFRAMES, type Timeframe } from './api';
   import {
     fetchCurve,
@@ -14,6 +15,15 @@
     type Run,
     type Trade,
   } from './backtest';
+  import {
+    createBasket,
+    fetchBaskets,
+    parseField,
+    replaceBasket,
+    toField,
+    updateBasket,
+    type SavedBasket,
+  } from './baskets';
   import { formatCents, formatSignedPct } from './format';
   import { fetchStrategies, type SavedStrategy } from './strategy';
   import type { User } from './session';
@@ -33,6 +43,10 @@
   let { symbol, timeframe, user, onTrades, onClose, onHelp }: Props = $props();
 
   let strategies = $state<SavedStrategy[]>([]);
+  let baskets = $state<SavedBasket[]>([]);
+  let activeBasketId = $state<string | null>(null);
+  let basketError = $state<string | null>(null);
+  let basketBusy = $state(false);
   let runs = $state<Run[]>([]);
   let active = $state<Run | null>(null);
   let curve = $state<Curve | null>(null);
@@ -46,7 +60,6 @@
   let start = $state(defaultStart());
   let end = $state(today());
   let capital = $state(100000);
-  let heldOverride = $state<number | null>(null);
 
   let error = $state<string | null>(null);
   let busy = $state(false);
@@ -55,19 +68,7 @@
 
   // A comma separated list is a basket; one name is the single-symbol run every phase
   // before this one produced, and the two go down the same path.
-  const basket = $derived(
-    runSymbol
-      .split(',')
-      .map((ticker) => ticker.trim().toUpperCase())
-      .filter((ticker) => ticker !== ''),
-  );
-
-  // The API reads max_positions = 0 as "hold every name", which is what someone typing a
-  // list of tickers means. Until the field is touched, follow the basket instead of pinning
-  // it to one and silently turning a portfolio into a one-at-a-time rotation.
-  const maxPositions = $derived(
-    heldOverride === null ? basket.length : Math.min(Math.max(heldOverride, 1), basket.length),
-  );
+  const basket = $derived(parseField(runSymbol));
 
   const canRun = $derived(
     user !== null && strategyId !== '' && basket.length > 0 && !busy && start !== '' && end !== '',
@@ -102,6 +103,53 @@
       }
     } catch (cause) {
       error = describe(cause);
+    }
+  }
+
+  async function loadBaskets() {
+    if (!user) {
+      baskets = [];
+      return;
+    }
+    try {
+      baskets = await fetchBaskets();
+      basketError = null;
+    } catch (cause) {
+      baskets = [];
+      basketError = describe(cause);
+    }
+  }
+
+  // Picking a basket rewrites the field rather than replacing it as a separate concept:
+  // the run still goes out as a list of tickers, and you can still edit it afterwards.
+  function selectBasket(id: string | null) {
+    basketError = null;
+    activeBasketId = id;
+
+    const chosen = baskets.find((saved) => saved.id === id);
+    if (chosen) {
+      runSymbol = toField(chosen);
+    }
+  }
+
+  async function saveBasket(name: string, id: string | null) {
+    if (basketBusy) {
+      return;
+    }
+
+    basketBusy = true;
+    basketError = null;
+
+    try {
+      const saved = id
+        ? await updateBasket(id, name, basket)
+        : await createBasket(name, basket);
+      baskets = replaceBasket(baskets, saved);
+      activeBasketId = saved.id;
+    } catch (cause) {
+      basketError = describe(cause);
+    } finally {
+      basketBusy = false;
     }
   }
 
@@ -193,7 +241,6 @@
         start,
         end,
         capital_cents: Math.round(capital * 100),
-        max_positions: maxPositions,
       });
 
       runs = [run, ...runs];
@@ -227,6 +274,7 @@
 
   onMount(() => {
     void loadStrategies();
+    void loadBaskets();
     void loadRuns();
   });
 
@@ -252,6 +300,16 @@
     {#if !user}
       <p class="hint">Sign in to run a backtest and keep its report.</p>
     {:else}
+      <BasketBar
+        {baskets}
+        activeId={activeBasketId}
+        tickers={basket}
+        busy={basketBusy}
+        error={basketError}
+        onSelect={selectBasket}
+        onSave={(name, id) => void saveBasket(name, id)}
+      />
+
       <form
         class="launch"
         onsubmit={(event) => {
@@ -280,9 +338,11 @@
           />
           <small>
             {#if basket.length > 1}
-              Basket of {basket.length} on shared capital, holding {maxPositions} at once.
+              Basket of {basket.length}: each is backtested on its own {Math.round(100 / basket.length)}%
+              of the capital, and the report aggregates them.
             {:else}
-              One ticker, or several separated by commas to backtest a basket on shared capital.
+              One ticker, or several separated by commas to backtest each on its own share of
+              the capital.
             {/if}
           </small>
         </label>
@@ -310,19 +370,6 @@
           <span>Capital</span>
           <input type="number" min="100" step="100" bind:value={capital} />
         </label>
-
-        {#if basket.length > 1}
-          <label class="short">
-            <span>Held at once</span>
-            <input
-              type="number"
-              min="1"
-              max={basket.length}
-              value={maxPositions}
-              oninput={(event) => (heldOverride = Number(event.currentTarget.value))}
-            />
-          </label>
-        {/if}
 
         <button type="submit" class="run" disabled={!canRun}>
           {busy ? 'Queueing…' : 'Run'}

@@ -14,18 +14,19 @@ import (
 )
 
 const (
-	DefaultCloseDelay   = 30 * time.Minute
-	DefaultPollInterval = 5 * time.Minute
-	DefaultRunTimeout   = time.Hour
+	DefaultFillAt     = 20 * time.Hour
+	DefaultRunTimeout = time.Hour
+
+	maxDayLookahead = 30
+	retryAfter      = time.Hour
 )
 
 type ScheduleOptions struct {
-	Intraday     bool
-	Futures      bool
-	CloseDelay   time.Duration
-	PollInterval time.Duration
-	RunTimeout   time.Duration
-	Sessions     int
+	Intraday   bool
+	Futures    bool
+	FillAt     time.Duration
+	RunTimeout time.Duration
+	Sessions   int
 }
 
 type Scheduler struct {
@@ -41,11 +42,8 @@ type Scheduler struct {
 }
 
 func NewScheduler(ingester *Ingester, futures *FuturesIngester, log *slog.Logger, opts ScheduleOptions) *Scheduler {
-	if opts.CloseDelay <= 0 {
-		opts.CloseDelay = DefaultCloseDelay
-	}
-	if opts.PollInterval <= 0 {
-		opts.PollInterval = DefaultPollInterval
+	if opts.FillAt <= 0 || opts.FillAt >= 24*time.Hour {
+		opts.FillAt = DefaultFillAt
 	}
 	if opts.RunTimeout <= 0 {
 		opts.RunTimeout = DefaultRunTimeout
@@ -61,23 +59,55 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.log.InfoContext(ctx, "ingest scheduler started",
 		slog.Bool("intraday", s.opts.Intraday),
 		slog.Bool("futures", s.opts.Futures),
-		slog.Duration("close_delay", s.opts.CloseDelay),
-		slog.Duration("poll_interval", s.opts.PollInterval),
+		slog.String("fill_at", Clock(s.opts.FillAt)),
+		slog.String("timezone", s.ingester.cal.Location().String()),
 	)
 
-	ticker := time.NewTicker(s.opts.PollInterval)
-	defer ticker.Stop()
-
+	// A process that comes up after the day's fill time still gets that day: the pass is
+	// guarded by ingest_runs, so catching up costs nothing once it has already run.
 	s.tick(ctx)
+
 	for {
+		next, wait := s.sleep(time.Now())
+		s.log.InfoContext(ctx, "next candle fill scheduled",
+			slog.Time("at", next),
+			slog.Duration("in", wait),
+		)
+
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			s.log.InfoContext(ctx, "ingest scheduler stopped")
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			s.tick(ctx)
 		}
 	}
+}
+
+func (s *Scheduler) sleep(now time.Time) (time.Time, time.Duration) {
+	next, ok := s.NextRun(now)
+	if !ok {
+		return now.Add(retryAfter), retryAfter
+	}
+	return next, next.Sub(now)
+}
+
+// The trigger is a wall-clock time on a trading day, so a weekend or a holiday moves it on
+// to the next session instead of burning a pass on a day with no candles to fetch.
+func (s *Scheduler) NextRun(now time.Time) (time.Time, bool) {
+	cal := s.ingester.cal
+
+	day := now.In(cal.Location())
+	for range maxDayLookahead {
+		if due, ok := s.DueAt(day); ok && due.After(now) {
+			return due, true
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+
+	return time.Time{}, false
 }
 
 func (s *Scheduler) tick(ctx context.Context) {
@@ -150,6 +180,10 @@ func (s *Scheduler) syncFutures(ctx context.Context, due time.Time) {
 	)
 }
 
+// brapi keeps revising the day's closing candle for hours after the bell, so the single
+// pass is pinned to an hour of the evening rather than to an offset from the close. The
+// clamp keeps a misconfigured early hour, or a short holiday session, from firing while the
+// market is still open.
 func (s *Scheduler) DueAt(now time.Time) (time.Time, bool) {
 	cal := s.ingester.cal
 
@@ -158,7 +192,22 @@ func (s *Scheduler) DueAt(now time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 
-	return session.Close.Add(s.opts.CloseDelay), true
+	due := atClock(session.Day, s.opts.FillAt, cal.Location())
+	if due.Before(session.Close) {
+		return session.Close, true
+	}
+
+	return due, true
+}
+
+func atClock(day time.Time, offset time.Duration, loc *time.Location) time.Time {
+	minutes := int(offset / time.Minute)
+	return time.Date(day.Year(), day.Month(), day.Day(), minutes/60, minutes%60, 0, 0, loc)
+}
+
+func Clock(offset time.Duration) string {
+	minutes := int(offset / time.Minute)
+	return fmt.Sprintf("%02d:%02d", minutes/60, minutes%60)
 }
 
 func (s *Scheduler) timeframes() []market.Timeframe {

@@ -73,6 +73,13 @@ type BacktestSweepSymbol struct {
 	SymbolID int64     `json:"symbol_id"`
 }
 
+type BacktestSymbolEquity struct {
+	RunID       uuid.UUID `json:"run_id"`
+	SymbolID    int64     `json:"symbol_id"`
+	Ts          time.Time `json:"ts"`
+	EquityCents int64     `json:"equity_cents"`
+}
+
 type BacktestTrade struct {
 	RunID          uuid.UUID  `json:"run_id"`
 	Seq            int32      `json:"seq"`
@@ -199,6 +206,20 @@ type Symbol struct {
 	LastSeen   *time.Time `json:"last_seen"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+type SymbolBasket struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SymbolBasketSymbol struct {
+	BasketID uuid.UUID `json:"basket_id"`
+	Ord      int32     `json:"ord"`
+	SymbolID int64     `json:"symbol_id"`
 }
 
 type User struct {

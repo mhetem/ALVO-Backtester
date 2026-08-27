@@ -36,7 +36,6 @@ type sweepRequest struct {
 	Start           string              `json:"start"`
 	End             string              `json:"end"`
 	CapitalCents    int64               `json:"capital_cents"`
-	MaxPositions    int                 `json:"max_positions"`
 	Axes            []sweep.AxisRequest `json:"axes"`
 	InSampleDays    int                 `json:"in_sample_days"`
 	OutOfSampleDays int                 `json:"out_of_sample_days"`
@@ -76,7 +75,6 @@ type sweepBody struct {
 	Start        string         `json:"start"`
 	End          string         `json:"end"`
 	CapitalCents int64          `json:"capital_cents"`
-	MaxPositions int32          `json:"max_positions"`
 	Points       int32          `json:"points"`
 	Axes         []sweep.Axis   `json:"axes"`
 	Folds        []sweep.Fold   `json:"folds,omitempty"`
@@ -136,12 +134,6 @@ func (s *Server) handleCreateSweep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tickers, err := readBasket(body.Symbol, body.Symbols)
-	if err != nil {
-		respondError(w, r, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	positions, err := readMaxPositions(body.MaxPositions, len(tickers))
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, err.Error())
 		return
@@ -214,7 +206,7 @@ func (s *Server) handleCreateSweep(w http.ResponseWriter, r *http.Request) {
 		folds:      folds,
 		points:     points,
 		window:     window,
-		positions:  positions,
+		positions:  len(tickers),
 		basket:     basket,
 	})
 	if err != nil {
@@ -642,7 +634,6 @@ func sweepFrom(row sweepFields, tickers []string, axes []sweep.Axis, folds []swe
 		Start:        row.StartDate.Format(time.DateOnly),
 		End:          row.EndDate.Format(time.DateOnly),
 		CapitalCents: row.CapitalCents,
-		MaxPositions: row.MaxPositions,
 		Points:       row.Points,
 		Axes:         axes,
 		Folds:        folds,

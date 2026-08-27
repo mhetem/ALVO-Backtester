@@ -263,16 +263,15 @@ func (r *Runner) execute(ctx context.Context, row database.BacktestRun) (Result,
 	}
 
 	return Run(Request{
-		Plan:         plan,
-		Instruments:  instruments,
-		MaxPositions: int(row.MaxPositions),
-		Timeframe:    timeframe,
-		Capital:      row.CapitalCents,
-		Index:        r.index(ctx, ids, timeframe, from, to),
-		IndexSymbol:  IndexTicker,
-		Rates:        r.rates,
-		Borrow:       r.borrow,
-		BarsPerYear:  market.BarsPerYear(r.cal, timeframe),
+		Plan:        plan,
+		Instruments: instruments,
+		Timeframe:   timeframe,
+		Capital:     row.CapitalCents,
+		Index:       r.index(ctx, ids, timeframe, from, to),
+		IndexSymbol: IndexTicker,
+		Rates:       r.rates,
+		Borrow:      r.borrow,
+		BarsPerYear: market.BarsPerYear(r.cal, timeframe),
 	})
 }
 
@@ -387,6 +386,28 @@ func (r *Runner) finish(ctx context.Context, row database.BacktestRun, result Re
 		}
 		if _, err := inTx.CreateBacktestEquity(writeCtx, equity); err != nil {
 			return fmt.Errorf("writing the equity curve: %w", err)
+		}
+	}
+
+	if len(result.Sleeves) > 0 {
+		points := 0
+		for _, sleeve := range result.Sleeves {
+			points += len(sleeve.Equity)
+		}
+
+		sleeves := make([]database.CreateBacktestSymbolEquityParams, 0, points)
+		for _, sleeve := range result.Sleeves {
+			for _, point := range sleeve.Equity {
+				sleeves = append(sleeves, database.CreateBacktestSymbolEquityParams{
+					RunID:       row.ID,
+					SymbolID:    sleeve.SymbolID,
+					Ts:          point.TS,
+					EquityCents: point.Cents,
+				})
+			}
+		}
+		if _, err := inTx.CreateBacktestSymbolEquity(writeCtx, sleeves); err != nil {
+			return fmt.Errorf("writing the per-symbol equity curves: %w", err)
 		}
 	}
 

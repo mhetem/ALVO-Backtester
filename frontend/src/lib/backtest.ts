@@ -31,9 +31,13 @@ export type Benchmark = {
   unavailable?: string;
 };
 
+// One stock's own run inside a basket: it gets a slice of the capital and nothing else is
+// shared, so it carries the same risk numbers the aggregate does.
 export type SymbolStats = {
   symbol: string;
   basis: string;
+  capital_cents: number;
+  final_equity_cents: number;
   trades: number;
   wins: number;
   losses: number;
@@ -44,7 +48,18 @@ export type SymbolStats = {
   borrow_cents: number;
   borrow_annual_pct: number;
   bars_in_market: number;
+  time_in_market_pct: number;
   contribution_pct: number;
+  return_pct: number;
+  cagr_pct: number;
+  volatility_pct: number;
+  max_drawdown: Drawdown;
+  sharpe: number;
+  sortino: number;
+  calmar: number;
+  profit_factor: number | null;
+  expectancy_cents: number;
+  benchmarks?: Benchmark[];
 };
 
 export type Metrics = {
@@ -53,7 +68,6 @@ export type Metrics = {
   bars_in_market: number;
   time_in_market_pct: number;
   bars_per_year: number;
-  max_positions: number;
 
   capital_cents: number;
   final_equity_cents: number;
@@ -98,7 +112,6 @@ export type Metrics = {
   exits_at_end: number;
   ambiguous_bars: number;
   skipped_entries: number;
-  crowded_out: number;
   shorts_unavailable: number;
   unadjusted_bars: number;
   unpriced_actions: number;
@@ -118,7 +131,6 @@ export type Run = {
   start: string;
   end: string;
   capital_cents: number;
-  max_positions: number;
   status: RunStatus;
   spec?: unknown;
   metrics?: Metrics;
@@ -156,6 +168,14 @@ export type Curve = {
   hold?: number[];
   index?: number[];
   drawdown: number[];
+  symbols?: SleeveCurve[];
+};
+
+// Stored on the run's timeline and sampled the same way, so a sleeve lines up with the
+// curve's `ts` point for point and needs no stamps of its own.
+export type SleeveCurve = {
+  symbol: string;
+  equity: number[];
 };
 
 export type LaunchRequest = {
@@ -165,7 +185,6 @@ export type LaunchRequest = {
   start: string;
   end: string;
   capital_cents: number;
-  max_positions: number;
 };
 
 type RunsResponse = {
